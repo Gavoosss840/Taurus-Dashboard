@@ -152,13 +152,40 @@ def credit_spread(leverage_ratio: float, cfg: ValuationConfig = DEFAULT_CONFIG) 
     return float(np.clip(spread, 0.005, 0.10))
 
 
+def debt_beta(spread: float, cfg: ValuationConfig = DEFAULT_CONFIG) -> float:
+    """Risque systématique porté par la dette elle-même, déduit de son spread.
+
+    La forme classique de Hamada suppose une dette SANS RISQUE (β_D = 0). Chez
+    une société très endettée, cette hypothèse abaisse beaucoup trop β_U, donc
+    r_U, donc gonfle la perpétuité : le modèle récompenserait l'endettement,
+    précisément l'inversion contre laquelle la comparaison au niveau des
+    capitaux propres met déjà en garde. Une société à D/E = 1,5 avec β_L = 0,95
+    se dé-leviérise en β_U = 0,44 sous β_D = 0 — un bêta d'actif inférieur à
+    celui d'un service public, pour une cyclique endettée.
+
+    Une prime de crédit ne rémunère qu'en partie le risque systématique ; le
+    reste couvre la perte attendue en cas de défaut et l'illiquidité. En
+    retenir la moitié est l'approximation usuelle (Cooper & Davydenko, 2007),
+    plafonnée à 0,4 : au-delà, la créance se comporte comme une action et la
+    séparation dette / capitaux propres perd son sens.
+    """
+    if cfg.equity_risk_premium <= 0:
+        return 0.0
+    return float(np.clip(0.5 * spread / cfg.equity_risk_premium, 0.0, 0.4))
+
+
 def unlever_beta(
     levered_beta: float,
     total_debt: float,
     equity_value: float,
     tax_rate: float,
+    beta_debt: float = 0.0,
 ) -> float:
-    """Dé-leviérisation de Hamada : β_U = β_L / (1 + (1 − τ)·D/E).
+    """Dé-leviérisation d'un bêta de capitaux propres en bêta d'actif.
+
+        β_U = (E·β_L + D(1 − τ)·β_D) / (E + D(1 − τ))
+
+    qui se réduit à la forme de Hamada β_L / (1 + (1 − τ)·D/E) quand β_D = 0.
 
     Le bêta estimé par la régression Fama-French est celui des CAPITAUX
     PROPRES : il intègre le risque financier créé par la dette. Actualiser un
@@ -177,8 +204,11 @@ def unlever_beta(
     """
     if not math.isfinite(levered_beta) or equity_value <= 0:
         return float("nan")
-    debt_ratio = max(total_debt, 0.0) / equity_value
-    return float(levered_beta / (1.0 + (1.0 - tax_rate) * debt_ratio))
+    debt_value = max(total_debt, 0.0) * (1.0 - tax_rate)
+    return float(
+        (equity_value * levered_beta + debt_value * beta_debt)
+        / (equity_value + debt_value)
+    )
 
 
 def unlevered_cost_of_capital(
@@ -305,7 +335,11 @@ def mm_valuation(
 
     nopat = ebit * (1.0 - tax_rate)
 
-    beta_unlevered = unlever_beta(levered_beta, total_debt, market_cap, tax_rate)
+    # `spread` a été calculé à l'étape 1 à partir du levier de cette société.
+    beta_unlevered = unlever_beta(
+        levered_beta, total_debt, market_cap, tax_rate,
+        beta_debt=debt_beta(spread, cfg),
+    )
     if not math.isfinite(beta_unlevered):
         beta_unlevered = cfg.default_unlevered_beta
         notes.append(

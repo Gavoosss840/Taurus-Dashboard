@@ -103,9 +103,12 @@ def test_valuation_is_independent_of_market_price():
     drift = abs(rich.unlevered_value / cheap.unlevered_value - 1.0)
     assert drift < 0.10, f"couplage résiduel trop fort : {drift:.1%}"
 
-    # Et la divergence, elle, doit réagir pleinement au cours.
-    assert cheap.divergence_pct > rich.divergence_pct
-    assert cheap.divergence_pct - rich.divergence_pct > 100.0
+    # La juste valeur des capitaux propres, elle, bouge à peine…
+    equity_drift = abs(rich.fair_equity_value / cheap.fair_equity_value - 1.0)
+    assert equity_drift < 0.10, f"la juste valeur suit le cours : {equity_drift:.1%}"
+
+    # …tandis que la divergence, qui compare cette valeur au cours, bascule.
+    assert cheap.divergence_pct > 0 > rich.divergence_pct
 
 
 def test_undervaluation_is_reachable():

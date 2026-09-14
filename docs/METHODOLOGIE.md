@@ -99,8 +99,10 @@ garde-fous de solvabilité (couverture des intérêts inférieure à 1,5× ; EBI
 négatif avec dette). Le pilier fonctionne donc comme un **filtre de risque de
 faillite**, pas comme une mesure de valorisation.
 
-C'est un constat sur l'algorithme de production, hors du périmètre de ce
-dépôt : aucune modification n'y a été apportée.
+La même correction a été portée dans l'algorithme de production
+(`Trading-strategy-Taurus`, branche `claude/confident-brahmagupta-7uh32s`), où
+elle change la composition de la jambe longue et les niveaux de take-profit :
+les back-tests publiés doivent y être relancés.
 
 ### La correction retenue ici
 
@@ -123,6 +125,30 @@ même fenêtre, donc un bêta cohérent avec l'alpha affiché à côté.
 Les trois frottements sont repris **à l'identique** de l'algorithme de
 production, y compris les taux de destruction sectoriels et la probabilité de
 défaut de Merton sous loi de Student.
+
+### Dette risquée : pourquoi Hamada seul ne suffit pas
+
+La forme classique de Hamada, `β_U = β_L / (1 + (1 − τ)·D/E)`, suppose une dette
+**sans risque**. Chez une société très endettée, cette hypothèse abaisse
+beaucoup trop `β_U`, donc `r_U`, et gonfle la perpétuité : le modèle
+récompenserait l'endettement — précisément l'inversion que la comparaison au
+niveau des capitaux propres cherche à éviter. Une société à `D/E = 1,5` avec
+`β_L = 0,95` se dé-leviérise en `β_U = 0,44`, un bêta d'actif inférieur à celui
+d'un service public pour une cyclique endettée.
+
+Le moteur utilise donc la forme complète, qui attribue à la dette son propre
+risque systématique :
+
+```
+β_U = (E·β_L + D(1 − τ)·β_D) / (E + D(1 − τ))
+```
+
+`β_D` se déduit du spread de crédit déjà calculé. Une prime de crédit ne
+rémunère qu'en partie le risque systématique — le reste couvre la perte
+attendue en cas de défaut et l'illiquidité — et en retenir la moitié est
+l'approximation usuelle (Cooper & Davydenko, 2007), plafonnée à 0,4 : au-delà,
+la créance se comporte comme une action et la séparation dette / capitaux
+propres perd son sens.
 
 ### Ce que la correction ne supprime pas
 

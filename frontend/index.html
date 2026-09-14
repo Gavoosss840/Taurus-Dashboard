@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Taurus Dashboard — Valorisation d'une société</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐂</text></svg>">
+</head>
+<body>
+
+<header class="masthead">
+  <div class="wrap masthead-inner">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">🐂</span>
+      <div>
+        <h1>Taurus Dashboard</h1>
+        <p class="brand-sub">Sous-évaluée, sur-évaluée ou au juste prix&nbsp;?</p>
+      </div>
+    </div>
+    <button type="button" class="link-button" id="method-toggle"
+            aria-expanded="false" aria-controls="method-panel">
+      La méthode
+    </button>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <!-- ── Recherche ────────────────────────────────────────────────────── -->
+  <form class="search" id="search-form" autocomplete="off">
+    <label class="sr-only" for="ticker">Ticker de la société</label>
+    <input type="text" id="ticker" name="ticker" placeholder="AAPL, MSFT, JNJ, XOM…"
+           maxlength="10" spellcheck="false" required>
+    <button type="submit" id="submit-button">Analyser</button>
+  </form>
+
+  <p class="suggestions">
+    Exemples&nbsp;:
+    <button type="button" class="chip" data-ticker="AAPL">AAPL</button>
+    <button type="button" class="chip" data-ticker="MSFT">MSFT</button>
+    <button type="button" class="chip" data-ticker="JNJ">JNJ</button>
+    <button type="button" class="chip" data-ticker="XOM">XOM</button>
+    <button type="button" class="chip" data-ticker="KO">KO</button>
+    <button type="button" class="chip" data-ticker="NEE">NEE</button>
+  </p>
+
+  <!-- ── Volet méthode ────────────────────────────────────────────────── -->
+  <section class="panel method" id="method-panel" hidden>
+    <h2>Comment le verdict est construit</h2>
+    <p>
+      Le dashboard rejoue sur un titre unique les trois piliers de la stratégie
+      Taurus. Chaque pilier est rapporté au seuil de déclenchement que
+      l'algorithme utilise déjà&nbsp;: un score de <strong>+1</strong> signifie
+      «&nbsp;ce pilier déclenche exactement son signal d'achat&nbsp;», borné à
+      ±2 pour qu'une valeur aberrante n'écrase pas les deux autres.
+    </p>
+    <ol class="method-list">
+      <li>
+        <strong>Alpha Fama-French 5 facteurs</strong> — régression des 60
+        derniers mois de rendement sur les facteurs marché, taille, valeur,
+        rentabilité et investissement. L'alpha est la performance que
+        l'exposition au risque n'explique pas&nbsp;; son erreur-type est robuste
+        à l'hétéroscédasticité (HC1).
+      </li>
+      <li>
+        <strong>Structure du capital (Modigliani-Miller)</strong> — juste valeur
+        par la valeur actuelle ajustée&nbsp;: perpétuité du résultat
+        d'exploitation net d'impôt, plus le bouclier fiscal de la dette, moins
+        les coûts de détresse financière (modèle de Merton, loi de Student) et
+        les coûts d'agence, moins la dette nette.
+      </li>
+      <li>
+        <strong>Momentum 12-1 ajusté de la volatilité</strong> — rendement
+        cumulé sur douze mois en écartant le mois le plus récent, divisé par la
+        volatilité réalisée, puis comparé au marché.
+      </li>
+    </ol>
+    <p class="method-weights" id="method-weights"></p>
+    <p class="disclaimer">
+      Cet outil est un support d'analyse quantitative, pas un conseil en
+      investissement. Les modèles de valorisation par perpétuité sont très
+      sensibles à leurs hypothèses&nbsp;: la grille de sensibilité affichée avec
+      le pilier Modigliani-Miller est à lire avant toute décision.
+    </p>
+  </section>
+
+  <!-- ── États ────────────────────────────────────────────────────────── -->
+  <section class="state" id="loading" hidden>
+    <div class="spinner" aria-hidden="true"></div>
+    <p id="loading-text">Analyse en cours…</p>
+  </section>
+
+  <section class="panel error" id="error" hidden role="alert">
+    <h2>Analyse impossible</h2>
+    <p id="error-message"></p>
+  </section>
+
+  <!-- ── Résultat ─────────────────────────────────────────────────────── -->
+  <section id="result" hidden>
+
+    <article class="verdict-card" id="verdict-card">
+      <header class="verdict-head">
+        <div>
+          <h2 id="company-name">—</h2>
+          <p class="identity">
+            <span class="ticker-badge" id="ticker-badge">—</span>
+            <span id="sector">—</span>
+          </p>
+        </div>
+        <div class="verdict-stamp" id="verdict-stamp">
+          <span class="verdict-label" id="verdict-label">—</span>
+          <span class="verdict-score" id="verdict-score">—</span>
+        </div>
+      </header>
+
+      <p class="summary" id="summary">—</p>
+
+      <div class="gauge" aria-hidden="true">
+        <div class="gauge-track">
+          <span class="gauge-zone gauge-over"></span>
+          <span class="gauge-zone gauge-fair"></span>
+          <span class="gauge-zone gauge-under"></span>
+          <span class="gauge-needle" id="gauge-needle"></span>
+        </div>
+        <div class="gauge-legend">
+          <span>Sur-évaluée</span><span>Juste prix</span><span>Sous-évaluée</span>
+        </div>
+      </div>
+
+      <dl class="metrics">
+        <div class="metric">
+          <dt>Cours actuel</dt><dd id="metric-price">—</dd>
+        </div>
+        <div class="metric">
+          <dt>Juste valeur Modigliani-Miller</dt><dd id="metric-fair">—</dd>
+        </div>
+        <div class="metric">
+          <dt>Potentiel implicite</dt><dd id="metric-upside">—</dd>
+        </div>
+        <div class="metric">
+          <dt>Capitalisation</dt><dd id="metric-mcap">—</dd>
+        </div>
+        <div class="metric">
+          <dt>Fiabilité du verdict</dt><dd id="metric-confidence">—</dd>
+        </div>
+      </dl>
+    </article>
+
+    <div class="pillars" id="pillars"></div>
+
+    <section class="panel warnings" id="warnings" hidden>
+      <h2>Points de vigilance sur les données</h2>
+      <ul id="warnings-list"></ul>
+    </section>
+
+    <footer class="provenance">
+      <p id="sources">—</p>
+      <button type="button" class="link-button" id="refresh-button">
+        Recalculer sans le cache
+      </button>
+    </footer>
+
+  </section>
+
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

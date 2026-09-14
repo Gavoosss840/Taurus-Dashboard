@@ -1,0 +1,20 @@
+# ── Python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# ── Secrets ───────────────────────────────────────────────────────────────
+.env
+.env.local
+
+# ── Cache disque (prix, fondamentaux, facteurs FF5) ───────────────────────
+.cache/
+
+# ── OS / éditeurs ─────────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/

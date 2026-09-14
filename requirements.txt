@@ -1,0 +1,17 @@
+# Taurus Dashboard – dépendances Python
+# Installation : pip install -r requirements.txt
+
+# ── Serveur web ───────────────────────────────────────────────────────────
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+
+# ── Calcul scientifique (moteur de valorisation Taurus) ───────────────────
+numpy>=1.26.0
+pandas>=2.0.0
+scipy>=1.11.0
+
+# ── Accès aux données de marché ───────────────────────────────────────────
+requests>=2.31.0
+
+# ── Tests ─────────────────────────────────────────────────────────────────
+pytest>=8.0.0

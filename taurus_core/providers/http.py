@@ -193,23 +193,38 @@ def probe(
 # cookie. Il reste valable le temps de la session.
 
 _YAHOO_CRUMB: Optional[str] = None
-_YAHOO_CRUMB_TRIED = False
+_YAHOO_CRUMB_ATTEMPTS = 0
+_YAHOO_CRUMB_LAST_TRY = 0.0
+
+# Un échec d'obtention ne doit pas être définitif : le cookie peut n'avoir pas
+# encore été posé, ou la requête avoir échoué pour une raison passagère. Latcher
+# le premier échec privait tout le processus de raison sociale, de secteur et de
+# capitalisation, jusqu'au redémarrage du serveur. On réessaie donc, sans pour
+# autant marteler la source.
+_YAHOO_CRUMB_MAX_ATTEMPTS = 4
+_YAHOO_CRUMB_COOLDOWN_S = 30.0
 
 
 def yahoo_crumb(force: bool = False) -> Optional[str]:
     """Jeton Yahoo de la session, ou None si son obtention échoue.
 
-    L'échec n'est pas fatal : l'appelant renonce simplement aux points
-    d'entrée qui l'exigent.
+    Le succès est mémorisé pour toute la session ; l'échec ne l'est pas, mais
+    les tentatives sont espacées et plafonnées. L'absence de jeton n'est pas
+    fatale : l'appelant renonce simplement aux points d'entrée qui l'exigent.
     """
-    global _YAHOO_CRUMB, _YAHOO_CRUMB_TRIED
+    global _YAHOO_CRUMB, _YAHOO_CRUMB_ATTEMPTS, _YAHOO_CRUMB_LAST_TRY
 
     if force:
-        _YAHOO_CRUMB, _YAHOO_CRUMB_TRIED = None, False
-    if _YAHOO_CRUMB_TRIED:
+        _YAHOO_CRUMB, _YAHOO_CRUMB_ATTEMPTS, _YAHOO_CRUMB_LAST_TRY = None, 0, 0.0
+    if _YAHOO_CRUMB:
         return _YAHOO_CRUMB
+    if _YAHOO_CRUMB_ATTEMPTS >= _YAHOO_CRUMB_MAX_ATTEMPTS:
+        return None
+    if _time.monotonic() - _YAHOO_CRUMB_LAST_TRY < _YAHOO_CRUMB_COOLDOWN_S:
+        return None
 
-    _YAHOO_CRUMB_TRIED = True
+    _YAHOO_CRUMB_ATTEMPTS += 1
+    _YAHOO_CRUMB_LAST_TRY = _time.monotonic()
     try:
         # Répond 404 mais dépose le cookie attendu.
         session().get("https://fc.yahoo.com/", timeout=10)
@@ -225,7 +240,10 @@ def yahoo_crumb(force: bool = False) -> Optional[str]:
             _YAHOO_CRUMB = crumb
             logger.debug("Jeton Yahoo obtenu.")
         else:
-            logger.debug("Jeton Yahoo indisponible (HTTP %s).", response.status_code)
+            logger.debug(
+                "Jeton Yahoo indisponible (HTTP %s), tentative %d/%d.",
+                response.status_code, _YAHOO_CRUMB_ATTEMPTS, _YAHOO_CRUMB_MAX_ATTEMPTS,
+            )
     except Exception as exc:
         logger.debug("Obtention du jeton Yahoo impossible : %s", exc)
 

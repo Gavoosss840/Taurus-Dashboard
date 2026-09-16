@@ -388,8 +388,6 @@ def test_the_yahoo_token_is_requested_as_plain_text(monkeypatch):
         return Response()
 
     monkeypatch.setattr(http_module.session(), "get", capture)
-    monkeypatch.setattr(http_module, "_YAHOO_CRUMB", None)
-    monkeypatch.setattr(http_module, "_YAHOO_CRUMB_TRIED", False)
 
     assert http_module.yahoo_crumb(force=True) == "abc123"
     crumb_call = next(h for url, h in seen if "getcrumb" in url)
@@ -417,3 +415,80 @@ def test_quotes_give_up_without_a_token(monkeypatch):
     monkeypatch.setattr(quotes.http, "get_json",
                         lambda *a, **k: pytest.fail("appel inutile"))
     assert quotes._from_yahoo("AAPL") is None
+
+
+def test_a_token_failure_is_not_final(monkeypatch):
+    """Un échec transitoire ne doit pas désactiver le jeton pour la session.
+
+    Latcher le premier échec privait tout le processus de raison sociale, de
+    secteur et de capitalisation — LVMH s'affichait « MC.PA » — jusqu'au
+    redémarrage du serveur.
+    """
+    from taurus_core.providers import http as http_module
+
+    attempts = {"n": 0}
+
+    class Failing:
+        status_code = 503
+        text = ""
+
+    class Working:
+        status_code = 200
+        text = "jeton42"
+
+    def flaky(url, **kwargs):
+        if "getcrumb" not in url:
+            return Failing()
+        attempts["n"] += 1
+        return Failing() if attempts["n"] == 1 else Working()
+
+    monkeypatch.setattr(http_module.session(), "get", flaky)
+    monkeypatch.setattr(http_module, "_YAHOO_CRUMB_COOLDOWN_S", 0.0)
+
+    assert http_module.yahoo_crumb(force=True) is None
+    assert http_module.yahoo_crumb() == "jeton42"
+
+
+def test_token_attempts_are_capped(monkeypatch):
+    """Réessayer, oui ; marteler la source, non."""
+    from taurus_core.providers import http as http_module
+
+    calls = {"n": 0}
+
+    class Failing:
+        status_code = 503
+        text = ""
+
+    def always_failing(url, **kwargs):
+        if "getcrumb" in url:
+            calls["n"] += 1
+        return Failing()
+
+    monkeypatch.setattr(http_module.session(), "get", always_failing)
+    monkeypatch.setattr(http_module, "_YAHOO_CRUMB_COOLDOWN_S", 0.0)
+
+    http_module.yahoo_crumb(force=True)
+    for _ in range(10):
+        http_module.yahoo_crumb()
+    assert calls["n"] == http_module._YAHOO_CRUMB_MAX_ATTEMPTS
+
+
+def test_a_successful_token_is_reused(monkeypatch):
+    from taurus_core.providers import http as http_module
+
+    calls = {"n": 0}
+
+    class Working:
+        status_code = 200
+        text = "jeton42"
+
+    def counting(url, **kwargs):
+        if "getcrumb" in url:
+            calls["n"] += 1
+        return Working()
+
+    monkeypatch.setattr(http_module.session(), "get", counting)
+    assert http_module.yahoo_crumb(force=True) == "jeton42"
+    for _ in range(5):
+        assert http_module.yahoo_crumb() == "jeton42"
+    assert calls["n"] == 1

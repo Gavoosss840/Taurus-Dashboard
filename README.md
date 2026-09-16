@@ -43,7 +43,7 @@ gratuites (SEC EDGAR, bibliothèque de Kenneth French, Yahoo Finance). Une clé
 Financial Modeling Prep dans `.env` améliore la couverture et la fiabilité.
 
 ```bash
-python -m pytest              # 246 tests, sans accès réseau
+python -m pytest              # 250 tests, sans accès réseau
 ```
 
 ---
@@ -146,6 +146,14 @@ MC.PA       SAP.DE      SHEL.L          Paris, Francfort, Londres
 7203.T      0700.HK     005930.KS       Tokyo, Hong Kong, Séoul
 RELIANCE.NS BHP.AX      PETR4.SA        Bombay, Sydney, São Paulo
 ```
+
+Une réserve d'emblée : **les places locales ne sont couvertes que par Yahoo
+Finance et Financial Modeling Prep.** Yahoo limite le débit par adresse IP, et
+sans clé FMP un ticker comme `MC.PA` n'a aucune source de repli. Les
+cotations américaines, ADR compris, passent en revanche par Nasdaq Data —
+c'est pourquoi `ASML`, `SAP`, `TM`, `TSM` ou `SHEL` fonctionnent sans clé,
+là où `MC.PA` échoue. Le bouton « Diagnostic des sources » indique ce qui
+répond depuis votre machine.
 
 Trois traitements en découlent.
 
@@ -277,7 +285,7 @@ taurus_core/              moteur de valorisation
     └── sectors.py        code SIC → secteur GICS
 backend/                  API FastAPI et sérialisation JSON
 frontend/                 interface web (HTML/CSS/JS, sans compilation)
-tests/                    246 tests, sans accès réseau
+tests/                    250 tests, sans accès réseau
 docs/METHODOLOGIE.md      justification des choix et limites du modèle
 ```
 

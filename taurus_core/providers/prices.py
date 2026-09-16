@@ -304,8 +304,17 @@ _PROVIDERS = (
 def get_monthly_prices(
     ticker: str,
     cfg: ValuationConfig = DEFAULT_CONFIG,
+    failures: Optional[dict] = None,
 ) -> Optional[PriceHistory]:
-    """Historique mensuel ajusté du titre, ou None si aucune source ne répond."""
+    """Historique mensuel ajusté du titre, ou None si aucune source ne répond.
+
+    `failures`, si fourni, reçoit {nom du fournisseur: raison de l'échec}.
+    L'appelant peut alors expliquer POURQUOI aucune source n'a répondu :
+    « ticker inconnu » et « quota atteint chez le seul fournisseur couvrant
+    les places locales » appellent des réponses opposées, et renvoyer le même
+    « vérifiez le ticker » dans les deux cas envoie corriger une saisie
+    correcte.
+    """
     ticker = ticker.upper().strip()
     end = datetime.now(timezone.utc)
     # On demande 18 mois de plus que le strict nécessaire : les fournisseurs
@@ -319,12 +328,15 @@ def get_monthly_prices(
         return cached
 
     errors: List[str] = []
+    recorded = failures if failures is not None else {}
+
     for name, provider in _PROVIDERS:
         try:
             history = provider(ticker, start, end)
         except Exception as exc:
             logger.debug("Fournisseur de prix %s en erreur pour %s : %s", name, ticker, exc)
             errors.append(f"{name}: {exc}")
+            recorded[name] = type(exc).__name__
             continue
         if history is not None and len(history) >= MIN_MONTHS:
             logger.info(
@@ -333,6 +345,7 @@ def get_monthly_prices(
             cache.save(cache_key, history, cfg)
             return history
         errors.append(f"{name}: aucune donnée exploitable")
+        recorded[name] = "aucune donnée exploitable"
 
     logger.warning("Aucun cours trouvé pour %s (%s).", ticker, " | ".join(errors))
     return None

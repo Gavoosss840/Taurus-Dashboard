@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -700,6 +701,54 @@ def _valuation_pillar(
     return display_cap, fair_value, market_cap, result, notes
 
 
+def _no_prices_message(symbol: str, failures: Dict[str, str]) -> str:
+    """Explique pourquoi aucune source de cours n'a répondu.
+
+    Renvoyer « vérifiez le ticker » quand le ticker est correct envoie
+    l'utilisateur corriger une saisie qui n'a rien à se reprocher. Une place
+    locale n'est couverte que par Yahoo et Financial Modeling Prep : quand
+    Yahoo est au quota et qu'aucune clé n'est configurée, le ticker n'y est
+    pour rien et le dire évite une recherche inutile.
+    """
+    suffix = regions_provider.suffix_of(symbol)
+    has_fmp_key = bool(os.environ.get("FMP_API_KEY", "").strip())
+
+    if suffix:
+        message = (
+            f"« {symbol} » désigne une cotation sur une place locale. Seuls "
+            "Yahoo Finance et Financial Modeling Prep couvrent ces places, et "
+            "aucun des deux n'a répondu."
+        )
+        if not has_fmp_key:
+            message += (
+                " Aucune clé Financial Modeling Prep n'est configurée, et "
+                "Yahoo limite le débit par adresse IP."
+            )
+        message += (
+            " Deux issues : saisir la cotation américaine de la société "
+            "lorsqu'elle existe — ASML, SAP, TM, TSM, SHEL se cherchent ainsi, "
+            "sans suffixe — ou configurer une clé Financial Modeling Prep. "
+            "Le bouton « Diagnostic des sources » indique l'état de chaque "
+            "fournisseur."
+        )
+        return message
+
+    if failures and all(reason == "aucune donnée exploitable"
+                        for reason in failures.values()):
+        return (
+            f"Aucune source ne connaît « {symbol} ». Vérifiez l'orthographe du "
+            "ticker ; une place locale s'écrit avec son suffixe, par exemple "
+            "MC.PA, 7203.T ou 0700.HK."
+        )
+
+    return (
+        f"Aucune donnée de marché trouvée pour « {symbol} ». Les fournisseurs "
+        "gratuits limitent le débit des requêtes : réessayez dans quelques "
+        "minutes, ou consultez le « Diagnostic des sources » pour savoir "
+        "lequel fait défaut."
+    )
+
+
 def analyze(ticker: str, cfg: ValuationConfig = DEFAULT_CONFIG) -> Analysis:
     """Analyse complète d'un titre : les trois piliers, puis le verdict.
 
@@ -725,14 +774,10 @@ def analyze(ticker: str, cfg: ValuationConfig = DEFAULT_CONFIG) -> Analysis:
     sources: Dict[str, str] = {}
 
     # ── 1. Cours ───────────────────────────────────────────────────────── #
-    history = prices_provider.get_monthly_prices(symbol, cfg)
+    price_failures: Dict[str, str] = {}
+    history = prices_provider.get_monthly_prices(symbol, cfg, failures=price_failures)
     if history is None:
-        raise TickerError(
-            f"Aucune donnée de marché trouvée pour « {symbol} ». Vérifiez le "
-            "ticker — une place locale s'écrit avec son suffixe, par exemple "
-            "MC.PA, 7203.T ou 0700.HK — ou réessayez : les fournisseurs "
-            "gratuits limitent parfois le débit des requêtes."
-        )
+        raise TickerError(_no_prices_message(symbol, price_failures))
     sources["prix"] = history.source
 
     # Londres cote en pence, pas en livres : sans cette normalisation la

@@ -21,7 +21,7 @@ def stub_engine(monkeypatch):
     prices = build_prices(factors)
     monkeypatch.setattr(
         valuation.prices_provider, "get_monthly_prices",
-        lambda ticker, cfg=None: prices,
+        lambda ticker, cfg=None, failures=None: prices,
     )
     monkeypatch.setattr(
         valuation.factors_provider, "get_ff5_factors",
@@ -91,7 +91,8 @@ def test_malformed_ticker_is_a_bad_request():
 
 def test_unknown_ticker_is_not_found(monkeypatch):
     monkeypatch.setattr(
-        valuation.prices_provider, "get_monthly_prices", lambda ticker, cfg=None: None,
+        valuation.prices_provider, "get_monthly_prices",
+        lambda ticker, cfg=None, failures=None: None,
     )
     response = client.get("/api/analyze/ZZZZ")
     assert response.status_code == 404
@@ -99,7 +100,7 @@ def test_unknown_ticker_is_not_found(monkeypatch):
 
 
 def test_internal_failure_returns_500(monkeypatch):
-    def explode(ticker, cfg=None):
+    def explode(ticker, cfg=None, failures=None):
         raise RuntimeError("panne du fournisseur")
 
     monkeypatch.setattr(valuation.prices_provider, "get_monthly_prices", explode)

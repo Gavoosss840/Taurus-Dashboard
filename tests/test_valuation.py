@@ -108,7 +108,7 @@ def stub_providers(monkeypatch):
     }
     monkeypatch.setattr(
         valuation.prices_provider, "get_monthly_prices",
-        lambda ticker, cfg=CFG: state["prices"],
+        lambda ticker, cfg=CFG, failures=None: state["prices"],
     )
     monkeypatch.setattr(
         valuation.factors_provider, "get_ff5_factors",
@@ -622,3 +622,73 @@ def test_total_return_source_is_left_untouched(stub_providers):
     result = analyze("TEST", CFG)
     assert "dividendes" not in result.data_sources
     assert not any("dividende" in w.lower() for w in result.warnings)
+
+
+# ── Message d'échec : la cause, pas une accusation ───────────────────────
+
+def test_a_local_venue_failure_does_not_blame_the_ticker(stub_providers, monkeypatch):
+    """« MC.PA » est correct : c'est la source qui manque, pas la saisie.
+
+    Renvoyer « vérifiez le ticker » envoie corriger une saisie qui n'a rien à
+    se reprocher, et masque la seule action utile — cotation américaine ou clé
+    d'API.
+    """
+    monkeypatch.delenv("FMP_API_KEY", raising=False)
+    stub_providers["prices"] = None
+    monkeypatch.setattr(
+        valuation.prices_provider, "get_monthly_prices",
+        lambda ticker, cfg=CFG, failures=None: None,
+    )
+
+    with pytest.raises(TickerError) as excinfo:
+        analyze("MC.PA", CFG)
+
+    message = str(excinfo.value)
+    assert "place locale" in message
+    assert "Vérifiez l'orthographe" not in message
+    assert "Financial Modeling Prep" in message
+
+
+def test_the_message_notes_a_configured_key(stub_providers, monkeypatch):
+    monkeypatch.setenv("FMP_API_KEY", "clé-de-test")
+    monkeypatch.setattr(
+        valuation.prices_provider, "get_monthly_prices",
+        lambda ticker, cfg=CFG, failures=None: None,
+    )
+
+    with pytest.raises(TickerError) as excinfo:
+        analyze("MC.PA", CFG)
+
+    # Inutile de signaler l'absence d'une clé qui est là.
+    assert "Aucune clé Financial Modeling Prep n'est configurée" not in str(excinfo.value)
+
+
+def test_an_unknown_ticker_is_named_as_such(stub_providers, monkeypatch):
+    """Quand chaque source répond mais qu'aucune ne connaît le titre."""
+    def nothing_found(ticker, cfg=CFG, failures=None):
+        if failures is not None:
+            failures.update({name: "aucune donnée exploitable"
+                             for name in ("yahoo", "nasdaq")})
+        return None
+
+    monkeypatch.setattr(valuation.prices_provider, "get_monthly_prices", nothing_found)
+
+    with pytest.raises(TickerError) as excinfo:
+        analyze("ZZZQQQ", CFG)
+
+    assert "orthographe" in str(excinfo.value)
+
+
+def test_a_transient_failure_points_at_the_diagnostic(stub_providers, monkeypatch):
+    """Sources injoignables : ni le ticker ni la place ne sont en cause."""
+    def unreachable(ticker, cfg=CFG, failures=None):
+        if failures is not None:
+            failures.update({"yahoo": "ConnectionError", "nasdaq": "Timeout"})
+        return None
+
+    monkeypatch.setattr(valuation.prices_provider, "get_monthly_prices", unreachable)
+
+    with pytest.raises(TickerError) as excinfo:
+        analyze("AAPL", CFG)
+
+    assert "Diagnostic des sources" in str(excinfo.value)

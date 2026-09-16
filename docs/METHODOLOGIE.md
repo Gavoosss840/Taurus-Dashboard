@@ -469,6 +469,13 @@ journaux du serveur.
 Trois états, pas deux. Une clé facultative non configurée n'est pas une panne,
 et l'afficher en rouge enverrait chercher un problème inexistant.
 
+Le message d'échec d'une analyse suit le même principe. « Aucune donnée pour
+MC.PA, vérifiez le ticker » envoie corriger une saisie correcte : les places
+locales ne sont couvertes que par Yahoo et Financial Modeling Prep, et quand
+le premier est au quota sans que le second soit configuré, le ticker n'y est
+pour rien. Trois causes, trois messages : place locale sans fournisseur,
+ticker qu'aucune source ne connaît, fournisseurs injoignables.
+
 ### Ce que la mesure a écarté
 
 Yahoo répond HTTP 429 depuis une adresse limitée. La tentation naturelle est

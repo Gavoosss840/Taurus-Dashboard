@@ -43,7 +43,7 @@ gratuites (SEC EDGAR, bibliothèque de Kenneth French, Yahoo Finance). Une clé
 Financial Modeling Prep dans `.env` améliore la couverture et la fiabilité.
 
 ```bash
-python -m pytest              # 225 tests, sans accès réseau
+python -m pytest              # 246 tests, sans accès réseau
 ```
 
 ---
@@ -213,6 +213,21 @@ locale passe nécessairement par Yahoo ou Financial Modeling Prep.
 
 Les réponses sont mises en cache sur disque (`.cache/`, 12 h par défaut).
 
+### Quand une source manque à l'appel
+
+Le bouton **Diagnostic des sources**, en bas de page, interroge chaque
+fournisseur et rapporte son code de retour, sa latence et ce qu'il faut en
+conclure. Un repli est sinon indiscernable : quota atteint, ticker inconnu,
+réseau coupé et clé absente produisent tous « prix : Nasdaq Data » et appellent
+des réponses opposées.
+
+Le cas le plus fréquent est **Yahoo en HTTP 429** — un quota de débit par
+adresse IP. Mesuré depuis une adresse limitée : six tentatives espacées sur
+soixante secondes échouent toutes, alors qu'une requête isolée passe parfois
+quelques minutes plus tard. Insister ne sert donc à rien, et le moteur ne le
+fait pas : il bascule immédiatement sur la source suivante. Pour s'affranchir
+de ce quota, une clé Financial Modeling Prep suffit.
+
 ---
 
 ## API
@@ -220,6 +235,7 @@ Les réponses sont mises en cache sur disque (`.cache/`, 12 h par défaut).
 | Route | Description |
 |---|---|
 | `GET /api/analyze/{ticker}` | Analyse complète. `?refresh=true` ignore le cache. |
+| `GET /api/diagnostics` | Interroge chaque source et rapporte ce qu'elle répond. |
 | `GET /api/config` | Paramètres du moteur. |
 | `GET /api/health` | État du service. |
 | `POST /api/cache/clear` | Vide le cache disque. |
@@ -248,6 +264,7 @@ taurus_core/              moteur de valorisation
 ├── capital_structure.py  pilier 2 — juste valeur Modigliani-Miller (APV)
 ├── momentum.py           pilier 3 — momentum 12-1 ajusté de la volatilité
 ├── total_return.py       reconstitution des dividendes depuis SEC EDGAR
+├── diagnostics.py        état des sources de données
 ├── valuation.py          orchestration, score composite, verdict
 ├── cache.py              cache disque avec durée de vie
 └── providers/            accès aux données, avec repli entre fournisseurs
@@ -260,7 +277,7 @@ taurus_core/              moteur de valorisation
     └── sectors.py        code SIC → secteur GICS
 backend/                  API FastAPI et sérialisation JSON
 frontend/                 interface web (HTML/CSS/JS, sans compilation)
-tests/                    225 tests, sans accès réseau
+tests/                    246 tests, sans accès réseau
 docs/METHODOLOGIE.md      justification des choix et limites du modèle
 ```
 

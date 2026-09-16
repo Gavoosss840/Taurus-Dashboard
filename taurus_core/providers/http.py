@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 import os
 import time
+import time as _time
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import requests
@@ -104,3 +106,65 @@ def get_bytes(
                 return None
             time.sleep(2 ** attempt)
     return None
+
+
+# --------------------------------------------------------------------------- #
+#  Sondage d'un fournisseur                                                    #
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class Probe:
+    """Ce qu'un fournisseur répond, sans interprétation."""
+
+    name: str
+    url: str
+    status: Optional[int] = None      # code HTTP, None si la connexion a échoué
+    latency_ms: Optional[int] = None
+    error: str = ""                   # type d'exception, le cas échéant
+    excerpt: str = ""                 # début de la réponse, pour diagnostic
+    attempts: int = 1
+
+    @property
+    def ok(self) -> bool:
+        return self.status is not None and 200 <= self.status < 300
+
+
+def probe(
+    name: str,
+    url: str,
+    params: Optional[dict] = None,
+    headers: Optional[dict] = None,
+    timeout: int = 15,
+    attempts: int = 1,
+    backoff: float = 2.0,
+) -> Probe:
+    """Interroge une source et rapporte ce qu'elle répond, sans lever.
+
+    Sert au diagnostic : quand une analyse retombe sur une source dégradée,
+    l'utilisateur doit pouvoir savoir POURQUOI la source préférée a été
+    écartée — quota atteint, ticker inconnu, réseau coupé — plutôt que de
+    constater le repli sans explication.
+    """
+    result = Probe(name=name, url=url, attempts=0)
+
+    for attempt in range(max(attempts, 1)):
+        result.attempts = attempt + 1
+        started = _time.perf_counter()
+        try:
+            response = session().get(url, params=params, headers=headers, timeout=timeout)
+            result.latency_ms = int((_time.perf_counter() - started) * 1000)
+            result.status = response.status_code
+            result.error = ""
+            result.excerpt = response.text[:160].replace("\n", " ").strip()
+            if result.ok or response.status_code < 500 and response.status_code != 429:
+                return result
+        except Exception as exc:
+            result.latency_ms = int((_time.perf_counter() - started) * 1000)
+            result.status = None
+            result.error = type(exc).__name__
+            result.excerpt = str(exc)[:160]
+
+        if attempt < attempts - 1:
+            _time.sleep(backoff * (attempt + 1))
+
+    return result

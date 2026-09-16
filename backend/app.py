@@ -23,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from taurus_core import __version__, cache
+from taurus_core import __version__, cache, diagnostics
 from taurus_core.config import DEFAULT_CONFIG
 from taurus_core.valuation import InvalidTickerError, TickerError, analyze
 
@@ -128,6 +128,26 @@ def analyze_ticker(
         result.ticker, result.verdict, result.composite_score, result.elapsed_seconds,
     )
     return JSONResponse(content=analysis_to_dict(result))
+
+
+@app.get("/api/diagnostics")
+def source_diagnostics(
+    ticker: str = Query("AAPL", description="Ticker servant de sonde."),
+) -> JSONResponse:
+    """Interroge chaque source de données et rapporte ce qu'elle répond.
+
+    Une analyse qui retombe sur une source dégradée n'en dit pas la raison :
+    quota atteint, ticker inconnu, réseau coupé et clé absente produisent le
+    même repli et appellent des réponses opposées.
+    """
+    report = diagnostics.run(ticker, DEFAULT_CONFIG)
+    logger.info(
+        "Diagnostic (%s) : %d/%d sources de cours disponibles.",
+        report["ticker"],
+        report["summary"]["price_sources_ok"],
+        report["summary"]["price_sources_total"],
+    )
+    return JSONResponse(content=report)
 
 
 @app.post("/api/cache/clear")

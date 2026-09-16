@@ -19,6 +19,9 @@ const dom = {
   methodToggle: el("method-toggle"),
   methodWeights: el("method-weights"),
   refresh:     el("refresh-button"),
+  diagButton:  el("diagnostics-button"),
+  diagPanel:   el("diagnostics"),
+  diagBody:    el("diagnostics-body"),
 };
 
 let lastTicker = "";
@@ -345,6 +348,71 @@ async function runAnalysis(ticker, refresh = false) {
   }
 }
 
+/* ── Diagnostic des sources ────────────────────────────────────────────── */
+
+function renderDiagnostics(report) {
+  const rows = report.checks.map((check) => {
+    /* Trois états, pas deux : une source facultative non configurée n'est pas
+       en panne, et l'afficher en rouge enverrait chercher un problème qui
+       n'existe pas. */
+    const skipped = !check.ok && check.status === null && !check.error;
+    const cls = check.ok ? "state-ok" : skipped ? "state-skip" : "state-ko";
+    const label = check.ok ? "OK" : skipped ? "non configurée" : "indisponible";
+    const detail = [
+      check.status !== null ? `HTTP ${check.status}` : check.error,
+      check.latency_ms !== null ? `${check.latency_ms}${NBSP}ms` : null,
+      check.attempts > 1 ? `${check.attempts} tentatives` : null,
+    ].filter(Boolean).join(" · ");
+
+    return `
+      <tr>
+        <td>
+          <span class="source-name">${check.name}</span><br>
+          <span class="source-role">${check.role}</span>
+        </td>
+        <td class="state ${cls}">${label}${detail ? `<br><span class="source-role">${detail}</span>` : ""}</td>
+        <td class="advice">${check.interpretation}</td>
+      </tr>`;
+  }).join("");
+
+  const summary = report.summary;
+  const headline = summary.essential_ok
+    ? `${summary.price_sources_ok} source(s) de cours sur ${summary.price_sources_total} disponible(s). `
+      + `Les sources indispensables — comptes SEC et facteurs Fama-French — répondent.`
+    : `Une source indispensable ne répond pas : l'analyse sera dégradée ou impossible.`;
+
+  dom.diagBody.innerHTML = `
+    <p class="diagnostics-intro">${headline}</p>
+    <table>
+      <thead><tr><th>Source</th><th>État</th><th>Lecture</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+async function runDiagnostics() {
+  dom.diagButton.disabled = true;
+  dom.diagButton.textContent = "Diagnostic…";
+  dom.diagBody.innerHTML = '<p class="diagnostics-intro">Interrogation des sources…</p>';
+  show(dom.diagPanel);
+
+  try {
+    const ticker = lastTicker || dom.input.value.trim() || "AAPL";
+    const response = await fetch(`/api/diagnostics?ticker=${encodeURIComponent(ticker)}`);
+    const payload = await response.json();
+    if (!response.ok) {
+      dom.diagBody.innerHTML = `<p class="diagnostics-intro">${payload.error || "Diagnostic impossible."}</p>`;
+      return;
+    }
+    renderDiagnostics(payload);
+  } catch (err) {
+    dom.diagBody.innerHTML =
+      '<p class="diagnostics-intro">Le serveur n\'a pas répondu.</p>';
+  } finally {
+    dom.diagButton.disabled = false;
+    dom.diagButton.textContent = "Diagnostic des sources";
+  }
+}
+
 /* ── Volet méthode ─────────────────────────────────────────────────────── */
 
 async function loadEngineConfig() {
@@ -376,6 +444,12 @@ dom.form.addEventListener("submit", (event) => {
 });
 
 dom.refresh.addEventListener("click", () => runAnalysis(lastTicker, true));
+
+dom.diagButton.addEventListener("click", () => {
+  /* Un second clic referme le volet. */
+  if (!dom.diagPanel.hidden) { hide(dom.diagPanel); return; }
+  runDiagnostics();
+});
 
 dom.methodToggle.addEventListener("click", () => {
   const open = !dom.methodPanel.hidden;

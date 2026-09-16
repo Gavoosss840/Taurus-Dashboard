@@ -454,7 +454,37 @@ indice n'étant pas un prix de marché.
 
 ---
 
-## 7. Limites connues
+## 7. Diagnostic des sources
+
+Le moteur enchaîne des fournisseurs de repli, ce qui le rend robuste et opaque
+à la fois : l'utilisateur voit « prix : Nasdaq Data » sans savoir pourquoi
+Yahoo a été écarté. Or quota atteint, ticker inconnu, réseau coupé et clé
+absente produisent le même repli et appellent des réponses opposées.
+
+`GET /api/diagnostics` interroge chaque source et rapporte son code de retour,
+sa latence, le nombre de tentatives et ce qu'il faut en conclure. Le module ne
+diagnostique rien de lui-même : il rend visible ce qui, sinon, se perd dans les
+journaux du serveur.
+
+Trois états, pas deux. Une clé facultative non configurée n'est pas une panne,
+et l'afficher en rouge enverrait chercher un problème inexistant.
+
+### Ce que la mesure a écarté
+
+Yahoo répond HTTP 429 depuis une adresse limitée. La tentation naturelle est
+d'insister davantage. La mesure dit le contraire : six tentatives espacées sur
+soixante secondes — 0, 2, 4, 8, 16 puis 30 secondes — échouent toutes, sur
+trois titres différents, alors qu'une requête isolée passe parfois quelques
+minutes plus tard. Le quota ne se laisse pas user par la patience.
+
+Le nombre de tentatives est donc resté à deux. Les augmenter aurait ralenti
+chaque analyse de plusieurs dizaines de secondes sans rien gagner. La réponse
+au quota n'est pas dans le code : attendre, ou configurer une clé Financial
+Modeling Prep.
+
+---
+
+## 8. Limites connues
 
 - **Sociétés déficitaires.** Une perpétuité de flux négatifs n'a pas de sens :
   le pilier Modigliani-Miller est neutralisé lorsque l'EBIT sur douze mois est

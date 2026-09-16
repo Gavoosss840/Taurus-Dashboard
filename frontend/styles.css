@@ -353,6 +353,25 @@ body {
 
 /* ── Vigilance et provenance ──────────────────────────────────────────── */
 
+.provenance-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
+.diagnostics-intro { font-size: 13.5px; color: var(--text-muted); margin-top: 0; }
+
+.diagnostics table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.diagnostics th, .diagnostics td {
+  text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.diagnostics th { color: var(--text-faint); font-weight: 400; font-size: 11px;
+  text-transform: uppercase; letter-spacing: .05em; }
+.diagnostics td.state { white-space: nowrap; font-family: var(--mono); }
+.diagnostics .state-ok { color: var(--under); }
+.diagnostics .state-ko { color: var(--over); }
+.diagnostics .state-skip { color: var(--text-faint); }
+.diagnostics .source-name { font-weight: 600; }
+.diagnostics .source-role { color: var(--text-faint); font-size: 12px; }
+.diagnostics .advice { color: var(--text-muted); font-size: 12.5px; }
+
 .warnings { border-color: var(--fair-dim); }
 .warnings h2 { color: var(--fair); }
 .warnings ul { margin: 0; padding-left: 20px; color: var(--text-muted); font-size: 13.5px; }

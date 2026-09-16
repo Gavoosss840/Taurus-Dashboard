@@ -10,6 +10,7 @@ Reprend les trois piliers analytiques de la stratégie Taurus
   • `momentum`          — momentum 12-1 ajusté de la volatilité
 
 `valuation.analyze(ticker)` orchestre les trois et rend le verdict.
+`diagnostics.run(ticker)` interroge les sources et rapporte leur état.
 """
 
 __version__ = "1.0.0"

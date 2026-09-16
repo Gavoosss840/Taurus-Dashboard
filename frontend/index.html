@@ -121,6 +121,17 @@
     <p id="error-message"></p>
   </section>
 
+  <!-- ── Diagnostic des sources ───────────────────────────────────────── -->
+  <section class="panel diagnostics" id="diagnostics" hidden>
+    <h2>Diagnostic des sources de données</h2>
+    <p class="diagnostics-intro">
+      Une analyse qui retombe sur une source dégradée n'en dit pas la
+      raison&nbsp;: quota atteint, ticker inconnu, réseau coupé et clé absente
+      produisent le même repli et appellent des réponses opposées.
+    </p>
+    <div id="diagnostics-body"></div>
+  </section>
+
   <!-- ── Résultat ─────────────────────────────────────────────────────── -->
   <section id="result" hidden>
 
@@ -183,9 +194,14 @@
 
     <footer class="provenance">
       <p id="sources">—</p>
-      <button type="button" class="link-button" id="refresh-button">
-        Recalculer sans le cache
-      </button>
+      <span class="provenance-actions">
+        <button type="button" class="link-button" id="diagnostics-button">
+          Diagnostic des sources
+        </button>
+        <button type="button" class="link-button" id="refresh-button">
+          Recalculer sans le cache
+        </button>
+      </span>
     </footer>
 
   </section>

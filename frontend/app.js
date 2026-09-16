@@ -137,6 +137,12 @@ function detailRows(pillar, currency) {
     rows.push(["Valeur p", formatNumber(d.p_value, 3)]);
     rows.push(["R² de la régression", pct(d.r_squared, 0)]);
     rows.push(["Mois observés", d.n_obs ?? "n/d"]);
+    if (d.months_for_significance) {
+      rows.push([
+        "Mois requis pour conclure",
+        `${d.months_for_significance} (${Math.round(d.months_for_significance / 12)} ans)`,
+      ]);
+    }
     rows.push(["Fenêtre", d.window || "n/d"]);
     if (d.betas) {
       const labels = {

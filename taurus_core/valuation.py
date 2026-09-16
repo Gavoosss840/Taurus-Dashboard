@@ -169,6 +169,19 @@ def _build_alpha_pillar(result: Optional[AlphaResult], cfg: ValuationConfig) -> 
 
     score = _normalise(result.alpha_tstat, result.t_critical, cfg)
 
+    # Le verdict du pilier suit le score (seuil 0,5), c'est-à-dire la moitié du
+    # seuil de significativité. La formulation doit refléter ces trois bandes,
+    # faute de quoi un t de 1,17 serait étiqueté « sous-évaluée » tout en étant
+    # décrit comme non significatif — deux affirmations contradictoires.
+    leaning_threshold = result.t_critical * cfg.verdict_threshold
+    magnitude = abs(result.alpha_tstat) if math.isfinite(result.alpha_tstat) else 0.0
+
+    # Nombre de mois qu'il faudrait pour que ce même alpha devienne
+    # significatif : le t-stat croît comme la racine du nombre d'observations.
+    months_needed = 0
+    if 0 < magnitude < result.t_critical:
+        months_needed = int(round(result.n_obs * (result.t_critical / magnitude) ** 2))
+
     if result.significant:
         sense = "supérieure" if result.direction > 0 else "inférieure"
         explanation = (
@@ -178,14 +191,34 @@ def _build_alpha_pillar(result: Optional[AlphaResult], cfg: ValuationConfig) -> 
             f"statistiquement significatif (t = {result.alpha_tstat:.2f}, "
             f"p = {result.p_value:.3f}), donc peu susceptible d'être dû au hasard."
         )
+    elif magnitude >= leaning_threshold:
+        sense = "au-dessus" if result.direction > 0 else "en dessous"
+        explanation = (
+            f"L'alpha ressort à {result.alpha_annual * 100:+.1f} % par an, soit "
+            f"{sense} de ce que l'exposition aux cinq facteurs de risque "
+            f"justifie. Le signe est net mais l'écart n'atteint pas le seuil de "
+            f"significativité (t = {result.alpha_tstat:.2f}, seuil "
+            f"{result.t_critical:.2f}) : la tendance penche dans ce sens sans "
+            "être démontrée. Ce pilier ne compte donc que pour une fraction de "
+            "son poids."
+        )
+        if months_needed:
+            explanation += (
+                f" Au même rythme, il faudrait environ {months_needed} mois "
+                f"({months_needed / 12:.0f} ans) d'historique pour conclure."
+            )
     else:
         explanation = (
             f"L'alpha ressort à {result.alpha_annual * 100:+.1f} % par an mais "
             f"n'est pas significatif (t = {result.alpha_tstat:.2f}, seuil "
             f"{result.t_critical:.2f}) : sur {result.n_obs} mois, on ne peut pas "
-            "le distinguer du bruit. Les cinq facteurs de risque expliquent "
-            f"{result.r_squared * 100:.0f} % de la variance des rendements."
+            "le distinguer du bruit."
         )
+
+    explanation += (
+        f" Les cinq facteurs de risque expliquent "
+        f"{result.r_squared * 100:.0f} % de la variance des rendements."
+    )
 
     return Pillar(
         key="alpha",
@@ -203,6 +236,7 @@ def _build_alpha_pillar(result: Optional[AlphaResult], cfg: ValuationConfig) -> 
             "t_critical": result.t_critical,
             "p_value": result.p_value,
             "significant": result.significant,
+            "months_for_significance": months_needed or None,
             "r_squared": result.r_squared,
             "n_obs": result.n_obs,
             "betas": result.betas,

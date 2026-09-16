@@ -460,3 +460,66 @@ def test_missing_exchange_rate_neutralises_the_mm_pillar(stub_providers):
     mm = next(p for p in result.pillars if p.key == "capital_structure")
     assert not mm.available
     assert any("change" in w.lower() for w in result.warnings)
+
+
+# ── Formulation du pilier alpha ──────────────────────────────────────────
+
+def alpha_pillar_for(tstat: float, n_obs: int = 60):
+    """Construit le pilier alpha pour un t-stat donné."""
+    from taurus_core.alpha import AlphaResult
+    from taurus_core.valuation import _build_alpha_pillar
+
+    result = AlphaResult(
+        alpha_monthly=0.01, alpha_annual=0.122, alpha_tstat=tstat,
+        alpha_stderr=0.01 / max(abs(tstat), 1e-9), t_critical=2.0,
+        p_value=0.25, r_squared=0.49, n_obs=n_obs,
+        betas={"Mkt-RF": 1.0}, window_start="2021-01-31", window_end="2025-12-31",
+    )
+    return _build_alpha_pillar(result, CFG)
+
+
+def test_a_non_significant_alpha_is_not_called_proven():
+    """Un t de 1,17 penche sans démontrer.
+
+    Le verdict du pilier suit le score (t / seuil = 0,58, donc au-dessus de
+    0,5), mais l'annoncer « sous-évaluée » tout en écrivant « pas
+    significatif » était contradictoire à l'écran.
+    """
+    pillar = alpha_pillar_for(1.17)
+    assert pillar.verdict == VERDICT_UNDERVALUED     # le score le justifie
+    assert "n'atteint pas le seuil" in pillar.explanation
+    assert "penche" in pillar.explanation
+    # Et surtout : plus d'affirmation de significativité.
+    assert "est statistiquement significatif" not in pillar.explanation
+
+
+def test_a_significant_alpha_says_so():
+    pillar = alpha_pillar_for(2.60)
+    assert "statistiquement significatif" in pillar.explanation
+
+
+def test_a_weak_alpha_is_plainly_noise():
+    pillar = alpha_pillar_for(0.38)
+    assert pillar.verdict == "NEUTRE"
+    assert "distinguer du bruit" in pillar.explanation
+
+
+def test_months_needed_follows_the_square_root_law():
+    """Le t-stat croît comme la racine du nombre d'observations.
+
+    Passer de 1,17 à 2,00 demande de multiplier T par (2,00/1,17)² ≈ 2,9.
+    """
+    pillar = alpha_pillar_for(1.17, n_obs=60)
+    needed = pillar.details["months_for_significance"]
+    assert needed == round(60 * (2.0 / 1.17) ** 2)
+    assert 165 <= needed <= 180
+    assert "ans" in pillar.explanation
+
+
+def test_no_months_estimate_when_already_significant():
+    assert alpha_pillar_for(2.60).details["months_for_significance"] is None
+
+
+def test_r_squared_is_always_reported():
+    for tstat in (0.38, 1.17, 2.60):
+        assert "variance des rendements" in alpha_pillar_for(tstat).explanation

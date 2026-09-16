@@ -209,6 +209,38 @@ signaux légitimes ; son audit quantitatif a corrigé ce point, repris ici. Des
 rendements à queues épaisses ne changent pas la loi de référence de la
 statistique *t*.
 
+### Alpha : allonger la fenêtre n'est pas la solution
+
+Un alpha non significatif appelle naturellement la question « faudrait-il plus
+de mois ? ». L'arithmétique est sans appel : le *t* croît comme la racine du
+nombre d'observations, donc passer d'un *t* de 1,17 au seuil de 2,00 exige de
+multiplier la fenêtre par (2,00 / 1,17)² ≈ 2,9 — soit environ 175 mois, près
+de quinze ans.
+
+Ce n'est pas le bon remède. Sur quinze ans, l'alpha d'une société n'est pas
+constant : modèle d'affaires, position concurrentielle et direction changent.
+On estimerait avec précision une moyenne qui ne décrit plus l'entreprise
+d'aujourd'hui. La fenêtre de 60 mois de l'algorithme est ce compromis-là, et
+le dashboard le conserve.
+
+**Échantillonner plus finement ne sert à rien non plus.** Passer au rendement
+quotidien multiplierait par vingt le nombre d'observations sans améliorer la
+précision de l'alpha : l'erreur-type d'une moyenne de rendements dépend de la
+DURÉE CALENDAIRE observée, pas du nombre de points à l'intérieur (Merton,
+1980). Les données quotidiennes améliorent l'estimation de la volatilité et du
+bêta, jamais celle du rendement espéré.
+
+Reste une voie légitime : réduire la variance résiduelle en expliquant mieux
+les rendements. Faire passer le R² de 49 % à 65 % relèverait le *t* de 1,17 à
+1,41 — une amélioration réelle, insuffisante à elle seule.
+
+La conclusion utile n'est donc pas « il manque des données » mais « l'effet est
+faible au regard du bruit ». Le moteur en tient compte sans rien masquer : le
+score du pilier vaut *t* / seuil, soit 0,58 dans cet exemple. Le pilier compte
+pour une fraction de son poids au lieu d'être compté comme acquis ou rejeté,
+et sa formulation distingue explicitement trois cas — significatif, penchant
+sans être démontré, indiscernable du bruit.
+
 ### Alpha : pas d'imputation des mois manquants
 
 Un rendement manquant remplacé par 0 % est presque parfaitement expliqué par

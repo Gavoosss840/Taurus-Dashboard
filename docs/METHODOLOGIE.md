@@ -407,9 +407,24 @@ capitalisation par cent.
   la SEC — LVMH, Nestlé, la cotation locale de Toyota — n'a de fondamentaux
   que si une clé Financial Modeling Prep est fournie ; à défaut, le pilier
   Modigliani-Miller est neutralisé et son poids reporté sur les deux autres.
-- **Dividendes.** Lorsque les cours proviennent de Nasdaq Data, ils excluent les
-  dividendes : l'alpha et le momentum sont sous-estimés d'autant. Le dashboard
-  le signale explicitement.
+- **Dividendes.** C'est le trou de données qui compte le plus. Un cours non
+  réajusté mesure un rendement en capital, inférieur au rendement total du
+  montant du dividende, et le t-stat de l'alpha s'en trouve décalé :
+
+  | Titre | Rendement | Décalage du *t* | *t* mesuré → corrigé |
+  |---|---|---|---|
+  | Alphabet | 0,4 % | +0,04 | 1,17 → 1,21 |
+  | Johnson & Johnson | 3,0 % | +0,35 | 0,14 → 0,50 |
+  | Verizon | 6,3 % | +0,67 | −1,59 → −0,93 |
+  | Altria | 7,5 % | +0,81 | −0,64 → +0,16 |
+
+  Le biais va toujours dans le même sens et croît avec le rendement : il
+  pénalise systématiquement les valeurs de rendement, et peut inverser le
+  signe de leur alpha. `PriceHistory.total_return` n'est donc vrai que
+  lorsqu'une source réintègre démontrablement les dividendes — la série
+  `adjClose` de Financial Modeling Prep, la série `adjclose` de Yahoo. Dès
+  qu'un fournisseur retombe sur le cours brut, ou n'en dit rien, le drapeau
+  passe à faux et l'utilisateur est averti.
 - **Un seul titre à la fois.** Le dashboard ne reconstitue pas le classement
   cross-sectionnel de la stratégie ; il ne dit pas si un titre est plus
   attrayant qu'un autre, seulement s'il s'écarte de sa juste valeur théorique.

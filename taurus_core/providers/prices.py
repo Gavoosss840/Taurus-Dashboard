@@ -9,11 +9,22 @@ panne ou un quota atteint chez l'un rende le dashboard inutilisable :
      cours ajustés des splits et dividendes) ;
   2. Yahoo Finance (API chart publique) — gratuit, sans clé ;
   3. marketdata.app — gratuit et sans clé ;
-  4. Nasdaq Data (API publique) — dernier recours.  Ses cours sont ajustés des
-     divisions d'action mais PAS des dividendes : le rendement mesuré est alors
-     un rendement en capital, inférieur au rendement total du montant du
-     dividende.  L'alpha calculé est d'autant sous-estimé, ce qui est signalé
-     à l'utilisateur (`total_return=False`).
+  4. Nasdaq Data (API publique) — dernier recours.
+
+Dividendes
+──────────
+`PriceHistory.total_return` n'est vrai que lorsque la source réintègre
+DÉMONTRABLEMENT les dividendes : la série `adjClose` de Financial Modeling
+Prep, la série `adjclose` de Yahoo. Dès qu'un fournisseur retombe sur le cours
+brut — ou n'en dit rien, comme marketdata.app et Nasdaq Data — le drapeau
+passe à faux et l'utilisateur est averti.
+
+Ce n'est pas un détail de présentation. Un cours sans dividendes mesure un
+rendement en capital, inférieur au rendement total du montant du dividende :
+le t-stat de l'alpha s'en trouve décalé de 0,04 pour Alphabet à 0,81 pour
+Altria. Le biais va toujours dans le même sens et croît avec le rendement du
+titre, donc il pénalise systématiquement les valeurs de rendement — là même
+où la comparaison entre titres a le plus d'importance.
 
 Sortie commune : une `pd.Series` de cours mensuels ajustés, indexée en fin de
 mois — exactement le format attendu par `taurus/data.py:get_monthly_prices`
@@ -52,8 +63,12 @@ class PriceHistory:
         self.monthly = monthly           # Series indexée fin de mois
         self.source = source             # nom du fournisseur retenu
         self.currency = currency
-        # False lorsque la source ne réintègre pas les dividendes : l'alpha
-        # mesuré sous-estime alors la performance réelle de l'actionnaire.
+        # True seulement si la source réintègre DÉMONTRABLEMENT les dividendes.
+        # Le drapeau ne doit jamais être optimiste : il pilote un avertissement
+        # à l'utilisateur, et un cours sans dividendes décale le t-stat de
+        # l'alpha de 0,04 (GOOGL) à 0,81 (Altria) — un biais systématique qui
+        # pénalise les titres à fort rendement, exactement là où la
+        # comparaison transversale compte.
         self.total_return = total_return
         # Le dernier cours connu : le point intra-mois si le fournisseur le
         # donne, sinon la dernière clôture mensuelle.
@@ -110,11 +125,13 @@ def _from_fmp(ticker: str, start: datetime, end: datetime) -> Optional[PriceHist
     if not rows:
         return None
 
-    # `adjClose` intègre splits et dividendes ; `close` est le repli.
+    # `adjClose` intègre splits et dividendes ; `close` ne couvre que les
+    # splits, et le repli sur lui doit être signalé, pas masqué.
     frame = pd.DataFrame(rows)
     if "date" not in frame.columns:
         return None
-    price_col = "adjClose" if "adjClose" in frame.columns else "close"
+    dividends_included = "adjClose" in frame.columns
+    price_col = "adjClose" if dividends_included else "close"
     daily = pd.Series(
         pd.to_numeric(frame[price_col], errors="coerce").values,
         index=pd.to_datetime(frame["date"]),
@@ -125,8 +142,13 @@ def _from_fmp(ticker: str, start: datetime, end: datetime) -> Optional[PriceHist
     monthly = _to_month_end(daily.resample("ME").last())
     if len(monthly) < MIN_MONTHS:
         return None
-    return PriceHistory(monthly, source="Financial Modeling Prep",
-                        last_price=float(daily.iloc[-1]))
+    return PriceHistory(
+        monthly,
+        source="Financial Modeling Prep" if dividends_included
+               else "Financial Modeling Prep (cours bruts)",
+        last_price=float(daily.iloc[-1]),
+        total_return=dividends_included,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -159,7 +181,8 @@ def _from_yahoo(ticker: str, start: datetime, end: datetime) -> Optional[PriceHi
         indicators = result.get("indicators") or {}
         adj = (indicators.get("adjclose") or [{}])[0].get("adjclose")
         raw = (indicators.get("quote") or [{}])[0].get("close")
-        values = adj if adj else raw
+        dividends_included = bool(adj)
+        values = adj if dividends_included else raw
         if not values:
             continue
 
@@ -174,9 +197,11 @@ def _from_yahoo(ticker: str, start: datetime, end: datetime) -> Optional[PriceHi
         meta = result.get("meta") or {}
         return PriceHistory(
             monthly,
-            source="Yahoo Finance",
+            source="Yahoo Finance" if dividends_included
+                   else "Yahoo Finance (cours bruts)",
             currency=meta.get("currency") or "USD",
             last_price=meta.get("regularMarketPrice"),
+            total_return=dividends_included,
         )
     return None
 
@@ -204,7 +229,11 @@ def _from_marketdata(ticker: str, start: datetime, end: datetime) -> Optional[Pr
     monthly = _to_month_end(series)
     if len(monthly) < MIN_MONTHS:
         return None
-    return PriceHistory(monthly, source="marketdata.app")
+    # Ce point d'entrée ne documente aucun ajustement des dividendes, et rien
+    # dans les séries renvoyées ne permet de l'établir. Par défaut on suppose
+    # donc des cours bruts : mieux vaut un avertissement de trop qu'un biais
+    # silencieux sur l'alpha.
+    return PriceHistory(monthly, source="marketdata.app", total_return=False)
 
 
 # --------------------------------------------------------------------------- #

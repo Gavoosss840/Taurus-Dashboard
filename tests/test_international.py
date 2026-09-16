@@ -228,3 +228,107 @@ def test_sector_labels_are_mapped_to_gics(raw, expected):
 def test_semiconductor_equipment_is_technology():
     """Le code SIC d'ASML (3559) le rangeait dans les machines industrielles."""
     assert sector_from_sic(3559) == "Information Technology"
+
+
+# --------------------------------------------------------------------------- #
+#  Dividendes : le drapeau de rendement total ne doit jamais être optimiste    #
+# --------------------------------------------------------------------------- #
+# Un cours sans dividendes décale le t-stat de l'alpha de 0,04 (Alphabet) à
+# 0,81 (Altria). Le biais va toujours dans le même sens et croît avec le
+# rendement du titre : il pénalise systématiquement les valeurs de rendement.
+# Un drapeau optimiste supprimerait l'avertissement sans supprimer le biais.
+
+from datetime import datetime, timezone   # noqa: E402
+
+from taurus_core.providers import prices as prices_provider   # noqa: E402
+
+WINDOW_START = datetime(2019, 1, 1, tzinfo=timezone.utc)
+WINDOW_END = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def yahoo_payload(with_adjclose: bool) -> dict:
+    timestamps = [int(pd.Timestamp(f"2020-{m:02d}-28").timestamp())
+                  for m in range(1, 13)]
+    timestamps += [int(pd.Timestamp(f"2021-{m:02d}-28").timestamp())
+                   for m in range(1, 13)]
+    timestamps += [int(pd.Timestamp(f"2022-{m:02d}-28").timestamp())
+                   for m in range(1, 13)]
+    closes = [100.0 + i for i in range(len(timestamps))]
+    indicators = {"quote": [{"close": closes}]}
+    if with_adjclose:
+        indicators["adjclose"] = [{"adjclose": closes}]
+    return {
+        "chart": {"result": [{
+            "timestamp": timestamps,
+            "indicators": indicators,
+            "meta": {"currency": "USD", "regularMarketPrice": closes[-1]},
+        }]}
+    }
+
+
+def test_yahoo_with_adjusted_closes_is_total_return(monkeypatch):
+    monkeypatch.setattr(prices_provider.http, "get_json",
+                        lambda *a, **k: yahoo_payload(True))
+    history = prices_provider._from_yahoo("TEST", WINDOW_START, WINDOW_END)
+    assert history is not None
+    assert history.total_return is True
+
+
+def test_yahoo_falling_back_to_raw_closes_is_flagged(monkeypatch):
+    """Sans série `adjclose`, Yahoo ne fournit qu'un rendement en capital."""
+    monkeypatch.setattr(prices_provider.http, "get_json",
+                        lambda *a, **k: yahoo_payload(False))
+    history = prices_provider._from_yahoo("TEST", WINDOW_START, WINDOW_END)
+    assert history is not None
+    assert history.total_return is False
+    assert "bruts" in history.source
+
+
+def fmp_payload(with_adjclose: bool) -> dict:
+    dates = pd.date_range("2020-01-31", periods=36, freq="ME")
+    rows = []
+    for i, day in enumerate(dates):
+        row = {"date": day.strftime("%Y-%m-%d"), "close": 100.0 + i}
+        if with_adjclose:
+            row["adjClose"] = 100.0 + i
+        rows.append(row)
+    return {"historical": rows}
+
+
+def test_fmp_with_adjusted_closes_is_total_return(monkeypatch):
+    monkeypatch.setenv("FMP_API_KEY", "clé-de-test")
+    monkeypatch.setattr(prices_provider.http, "get_json",
+                        lambda *a, **k: fmp_payload(True))
+    history = prices_provider._from_fmp("TEST", WINDOW_START, WINDOW_END)
+    assert history is not None
+    assert history.total_return is True
+
+
+def test_fmp_falling_back_to_raw_closes_is_flagged(monkeypatch):
+    monkeypatch.setenv("FMP_API_KEY", "clé-de-test")
+    monkeypatch.setattr(prices_provider.http, "get_json",
+                        lambda *a, **k: fmp_payload(False))
+    history = prices_provider._from_fmp("TEST", WINDOW_START, WINDOW_END)
+    assert history is not None
+    assert history.total_return is False
+
+
+def test_sources_without_documented_adjustment_are_flagged(monkeypatch):
+    """marketdata.app ne documente aucun ajustement : on suppose des cours bruts.
+
+    Mieux vaut un avertissement de trop qu'un biais silencieux sur l'alpha.
+    """
+    timestamps = [int(pd.Timestamp(f"2021-{m:02d}-28").timestamp())
+                  for m in range(1, 13)]
+    timestamps += [int(pd.Timestamp(f"2022-{m:02d}-28").timestamp())
+                   for m in range(1, 13)]
+    timestamps += [int(pd.Timestamp(f"2023-{m:02d}-28").timestamp())
+                   for m in range(1, 13)]
+    monkeypatch.setattr(
+        prices_provider.http, "get_json",
+        lambda *a, **k: {"s": "ok", "t": timestamps,
+                         "c": [100.0 + i for i in range(len(timestamps))]},
+    )
+    history = prices_provider._from_marketdata("TEST", WINDOW_START, WINDOW_END)
+    assert history is not None
+    assert history.total_return is False

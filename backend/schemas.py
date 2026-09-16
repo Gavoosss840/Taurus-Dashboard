@@ -65,6 +65,8 @@ def analysis_to_dict(analysis: Analysis) -> Dict:
         "price": safe_float(analysis.price),
         "fair_value": safe_float(analysis.fair_value),
         "upside_pct": safe_float(analysis.upside_pct),
+        "fair_price_low": safe_float(analysis.fair_price_low),
+        "fair_price_high": safe_float(analysis.fair_price_high),
         "market_cap": safe_float(analysis.market_cap),
         "pillars": [pillar_to_dict(p) for p in analysis.pillars],
         "warnings": list(analysis.warnings),

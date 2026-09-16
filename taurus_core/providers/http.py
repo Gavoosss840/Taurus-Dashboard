@@ -21,9 +21,19 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 20
 
+# Yahoo Finance refuse par un HTTP 429 certaines chaînes de User-Agent très
+# répandues — dont « Macintosh; Intel Mac OS X 10_15_7 … Chrome/124.0.0.0 »,
+# valeur par défaut de nombreux scripts. Le refus est déterministe : la même
+# requête, au même instant, passe avec la chaîne ci-dessous et échoue avec
+# l'autre. Ce n'est donc pas un quota, malgré le code renvoyé.
+#
+# La conséquence était lourde : Yahoo est le seul fournisseur couvrant les
+# places locales (MC.PA, 7203.T, 0700.HK) et le seul à remonter au-delà de
+# quelques années. Tout passait en repli sur Nasdaq Data, sans dividendes et
+# limité aux cotations américaines.
 _BROWSER_UA = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 
 _session: Optional[requests.Session] = None
@@ -168,3 +178,55 @@ def probe(
             _time.sleep(backoff * (attempt + 1))
 
     return result
+
+
+# --------------------------------------------------------------------------- #
+#  Jeton Yahoo Finance                                                         #
+# --------------------------------------------------------------------------- #
+# Les points d'entrée `quoteSummary` et `quote` de Yahoo exigent un couple
+# cookie + jeton (« crumb »), là où `chart` s'en passe. Sans lui, ils
+# répondent 401 « Invalid Crumb » — et le dashboard perd la raison sociale, le
+# secteur et la capitalisation des titres hors périmètre SEC.
+#
+# Le jeton s'obtient en deux temps : une requête sur fc.yahoo.com, qui pose le
+# cookie tout en répondant 404, puis un appel à /v1/test/getcrumb avec ce
+# cookie. Il reste valable le temps de la session.
+
+_YAHOO_CRUMB: Optional[str] = None
+_YAHOO_CRUMB_TRIED = False
+
+
+def yahoo_crumb(force: bool = False) -> Optional[str]:
+    """Jeton Yahoo de la session, ou None si son obtention échoue.
+
+    L'échec n'est pas fatal : l'appelant renonce simplement aux points
+    d'entrée qui l'exigent.
+    """
+    global _YAHOO_CRUMB, _YAHOO_CRUMB_TRIED
+
+    if force:
+        _YAHOO_CRUMB, _YAHOO_CRUMB_TRIED = None, False
+    if _YAHOO_CRUMB_TRIED:
+        return _YAHOO_CRUMB
+
+    _YAHOO_CRUMB_TRIED = True
+    try:
+        # Répond 404 mais dépose le cookie attendu.
+        session().get("https://fc.yahoo.com/", timeout=10)
+        # Le jeton est renvoyé en texte brut : l'en-tête `Accept` de la
+        # session, qui vise le JSON, vaudrait un 406 « Not Acceptable ».
+        response = session().get(
+            "https://query1.finance.yahoo.com/v1/test/getcrumb",
+            headers={"Accept": "*/*"}, timeout=10,
+        )
+        crumb = (response.text or "").strip()
+        # Un jeton est une courte chaîne opaque ; une page HTML signale un refus.
+        if response.status_code == 200 and crumb and "<" not in crumb and len(crumb) < 40:
+            _YAHOO_CRUMB = crumb
+            logger.debug("Jeton Yahoo obtenu.")
+        else:
+            logger.debug("Jeton Yahoo indisponible (HTTP %s).", response.status_code)
+    except Exception as exc:
+        logger.debug("Obtention du jeton Yahoo impossible : %s", exc)
+
+    return _YAHOO_CRUMB

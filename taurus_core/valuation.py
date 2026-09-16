@@ -107,6 +107,12 @@ class Analysis:
     fair_value: float
     upside_pct: float
     market_cap: float
+    # Bornes en PRIX de la zone neutre du pilier Modigliani-Miller : en dessous
+    # de la première le titre est décoté d'au moins le seuil, au-dessus de la
+    # seconde il est surcoté d'autant. Donner l'écart en pourcentage seul
+    # oblige l'utilisateur à refaire le calcul pour situer le cours.
+    fair_price_low: float
+    fair_price_high: float
 
     pillars: List[Pillar]
     warnings: List[str]
@@ -860,6 +866,11 @@ def analyze(ticker: str, cfg: ValuationConfig = DEFAULT_CONFIG) -> Analysis:
         sources["capitalisation"] = quote.source
         if sector in ("", "Unknown") and quote.sector != "Unknown":
             sector = quote.sector
+        # Hors du périmètre SEC — une cotation locale, par exemple — le nom
+        # vient du fournisseur de cotation, faute de quoi la carte afficherait
+        # « MC.PA » en guise de raison sociale.
+        if company_name in ("", symbol) and quote.company_name:
+            company_name = quote.company_name
 
     # ── 3. Région et facteurs Fama-French ──────────────────────────────── #
     guess = regions_provider.detect_region(symbol, country, accounting_currency)
@@ -908,8 +919,12 @@ def analyze(ticker: str, cfg: ValuationConfig = DEFAULT_CONFIG) -> Analysis:
 
     # ── 4. Juste valeur Modigliani-Miller ──────────────────────────────── #
     mm_result: Optional[MMResult] = None
-    market_cap = float("nan")
     fair_value = float("nan")
+
+    # La capitalisation vient du titre coté : elle est connue même sans
+    # comptes, ce qui est le cas d'une cotation locale hors périmètre SEC.
+    # `_valuation_pillar` l'affinera si les fondamentaux sont disponibles.
+    market_cap = quote.market_cap if quote is not None else float("nan")
 
     if accounting is not None:
         market_cap, fair_value, _mm_cap, mm_result, mm_notes = _valuation_pillar(
@@ -935,6 +950,14 @@ def analyze(ticker: str, cfg: ValuationConfig = DEFAULT_CONFIG) -> Analysis:
         else float("nan")
     )
 
+    # Bornes de la zone neutre, exprimées en prix : le seuil de l'algorithme
+    # porte sur l'écart relatif, or c'est un cours que l'utilisateur regarde.
+    fair_low = fair_high = float("nan")
+    if math.isfinite(fair_value) and fair_value > 0:
+        threshold = cfg.leverage_gap_threshold
+        fair_low = fair_value / (1.0 + threshold)
+        fair_high = fair_value / (1.0 - threshold)
+
     if not [p for p in pillars if p.available]:
         raise TickerError(
             f"Aucun pilier d'analyse n'a pu être calculé pour « {symbol} »."
@@ -956,6 +979,8 @@ def analyze(ticker: str, cfg: ValuationConfig = DEFAULT_CONFIG) -> Analysis:
         fair_value=fair_value,
         upside_pct=upside,
         market_cap=market_cap,
+        fair_price_low=fair_low,
+        fair_price_high=fair_high,
         pillars=pillars,
         warnings=warnings,
         data_sources=sources,

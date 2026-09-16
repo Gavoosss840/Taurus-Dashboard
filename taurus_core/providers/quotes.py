@@ -85,6 +85,7 @@ class Quote:
     market_cap: float
     currency: str = "USD"
     sector: str = "Unknown"
+    company_name: str = ""
     source: str = ""
 
 
@@ -123,6 +124,7 @@ def _from_fmp(ticker: str) -> Optional[Quote]:
         market_cap=market_cap,
         currency=str(info.get("currency") or "USD").upper(),
         sector=normalise_sector(info.get("sector")),
+        company_name=str(info.get("companyName") or "").strip(),
         source="Financial Modeling Prep",
     )
 
@@ -132,10 +134,15 @@ def _from_fmp(ticker: str) -> Optional[Quote]:
 # --------------------------------------------------------------------------- #
 
 def _from_yahoo(ticker: str) -> Optional[Quote]:
+    # Contrairement à `chart`, ce point d'entrée exige un couple cookie/jeton.
+    crumb = http.yahoo_crumb()
+    if not crumb:
+        return None
+
     for host in YAHOO_HOSTS:
         payload = http.get_json(
             f"{host}/v10/finance/quoteSummary/{ticker}",
-            params={"modules": "price,assetProfile"},
+            params={"modules": "price,assetProfile", "crumb": crumb},
             retries=2,
         )
         if not isinstance(payload, dict):
@@ -155,6 +162,9 @@ def _from_yahoo(ticker: str) -> Optional[Quote]:
             market_cap=market_cap,
             currency=str(price_block.get("currency") or "USD").upper(),
             sector=normalise_sector(profile.get("sector")),
+            company_name=str(
+                price_block.get("longName") or price_block.get("shortName") or ""
+            ).strip(),
             source="Yahoo Finance",
         )
     return None

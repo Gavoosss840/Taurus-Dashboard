@@ -332,3 +332,88 @@ def test_sources_without_documented_adjustment_are_flagged(monkeypatch):
     history = prices_provider._from_marketdata("TEST", WINDOW_START, WINDOW_END)
     assert history is not None
     assert history.total_return is False
+
+
+# --------------------------------------------------------------------------- #
+#  En-têtes HTTP : deux refus déterministes, pris pour des quotas              #
+# --------------------------------------------------------------------------- #
+
+def test_browser_user_agent_is_not_the_blocked_one():
+    """Yahoo refuse par un HTTP 429 certaines chaînes de User-Agent répandues.
+
+    Celle par défaut de nombreux scripts — « Macintosh; Intel Mac OS X
+    10_15_7 … Chrome/124.0.0.0 » — en fait partie. Le refus est déterministe,
+    malgré le code renvoyé : la même requête, au même instant, passe avec une
+    autre chaîne. La conséquence était lourde, Yahoo étant le seul fournisseur
+    couvrant les places locales.
+    """
+    from taurus_core.providers.http import _BROWSER_UA
+
+    assert "Macintosh" not in _BROWSER_UA
+    assert "Mozilla/5.0" in _BROWSER_UA
+
+
+def test_binary_downloads_do_not_ask_for_json(monkeypatch):
+    """L'en-tête `Accept` de la session vaut un 406 sur un fichier ZIP."""
+    captured = {}
+
+    class Response:
+        status_code = 200
+        content = b"zip"
+
+        def raise_for_status(self):
+            pass
+
+    def capture(url, headers=None, timeout=None, **kw):
+        captured["headers"] = headers or {}
+        return Response()
+
+    monkeypatch.setattr(prices_provider.http.session(), "get", capture)
+    prices_provider.http.get_bytes("https://example.invalid/fichier.zip")
+    assert captured["headers"].get("Accept") == "*/*"
+
+
+def test_the_yahoo_token_is_requested_as_plain_text(monkeypatch):
+    """Le jeton est du texte brut : demander du JSON vaut un 406."""
+    from taurus_core.providers import http as http_module
+
+    seen = []
+
+    class Response:
+        status_code = 200
+        text = "abc123"
+
+    def capture(url, headers=None, timeout=None, **kw):
+        seen.append((url, headers or {}))
+        return Response()
+
+    monkeypatch.setattr(http_module.session(), "get", capture)
+    monkeypatch.setattr(http_module, "_YAHOO_CRUMB", None)
+    monkeypatch.setattr(http_module, "_YAHOO_CRUMB_TRIED", False)
+
+    assert http_module.yahoo_crumb(force=True) == "abc123"
+    crumb_call = next(h for url, h in seen if "getcrumb" in url)
+    assert crumb_call.get("Accept") == "*/*"
+
+
+def test_an_html_answer_is_not_mistaken_for_a_token(monkeypatch):
+    """Une page de refus ne doit pas être prise pour un jeton valide."""
+    from taurus_core.providers import http as http_module
+
+    class Response:
+        status_code = 200
+        text = "<!DOCTYPE html><html>refus</html>"
+
+    monkeypatch.setattr(http_module.session(), "get",
+                        lambda *a, **k: Response())
+    assert http_module.yahoo_crumb(force=True) is None
+
+
+def test_quotes_give_up_without_a_token(monkeypatch):
+    """`quoteSummary` exige le jeton : sans lui, inutile d'appeler."""
+    from taurus_core.providers import quotes
+
+    monkeypatch.setattr(quotes.http, "yahoo_crumb", lambda: None)
+    monkeypatch.setattr(quotes.http, "get_json",
+                        lambda *a, **k: pytest.fail("appel inutile"))
+    assert quotes._from_yahoo("AAPL") is None

@@ -476,18 +476,42 @@ le premier est au quota sans que le second soit configuré, le ticker n'y est
 pour rien. Trois causes, trois messages : place locale sans fournisseur,
 ticker qu'aucune source ne connaît, fournisseurs injoignables.
 
+### Deux refus déterministes, pris pour des quotas
+
+Yahoo répondait HTTP 429 à chaque requête, ce qui désigne un quota de débit.
+La mesure a montré autre chose : la même requête, au même instant, passe ou
+échoue selon la seule chaîne de **User-Agent**. Celle par défaut de nombreux
+scripts — « Macintosh; Intel Mac OS X 10_15_7 … Chrome/124.0.0.0 » — est
+refusée systématiquement ; une autre passe. Le code 429 décrivait donc un
+filtrage, pas une saturation.
+
+La conséquence était lourde : Yahoo est le seul fournisseur couvrant les
+places locales et le seul à remonter au-delà de quelques années. Tout basculait
+sur Nasdaq Data, limité aux cotations américaines et sans dividendes — d'où
+la reconstitution décrite en section 6, qui reste utile mais n'est plus la
+seule issue.
+
+Un second refus, de même nature, touchait le jeton Yahoo : `getcrumb` renvoie
+du texte brut et répondait 406 « Not Acceptable » à une session réclamant du
+JSON. Sans jeton, les points d'entrée `quoteSummary` et `quote` restent
+inaccessibles, et avec eux la raison sociale, le secteur et la capitalisation
+des titres hors périmètre SEC.
+
+La leçon vaut au-delà de ces deux cas : un code d'erreur HTTP nomme une
+catégorie, pas une cause. Le diagnostic rapporte le code, mais c'est la mesure
+comparative — faire varier un seul paramètre à la fois — qui a tranché.
+
 ### Ce que la mesure a écarté
 
-Yahoo répond HTTP 429 depuis une adresse limitée. La tentation naturelle est
-d'insister davantage. La mesure dit le contraire : six tentatives espacées sur
-soixante secondes — 0, 2, 4, 8, 16 puis 30 secondes — échouent toutes, sur
-trois titres différents, alors qu'une requête isolée passe parfois quelques
-minutes plus tard. Le quota ne se laisse pas user par la patience.
+Face au 429, la tentation était d'insister. La mesure l'a écarté avant que la
+cause réelle ne soit connue : six tentatives espacées sur soixante secondes —
+0, 2, 4, 8, 16 puis 30 — échouaient toutes, sur trois titres. Le nombre de
+tentatives est donc resté à deux, et c'est heureux : le refus tenait au
+User-Agent, et aucune patience n'en serait venue à bout.
 
-Le nombre de tentatives est donc resté à deux. Les augmenter aurait ralenti
-chaque analyse de plusieurs dizaines de secondes sans rien gagner. La réponse
-au quota n'est pas dans le code : attendre, ou configurer une clé Financial
-Modeling Prep.
+Reste un vrai quota, lui, au-delà d'un certain volume de requêtes. Il se
+traite par le cache — douze heures par défaut — et, le cas échéant, par une
+clé Financial Modeling Prep.
 
 ---
 

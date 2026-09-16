@@ -121,6 +121,27 @@ function renderVerdict(data) {
   upside.className = data.upside_pct === null ? ""
     : data.upside_pct > 0 ? "positive" : "negative";
 
+  /* La zone de juste prix traduit en COURS le seuil de ±25 % du pilier
+     Modigliani-Miller : sous la borne basse le titre est décoté d'au moins ce
+     seuil, au-dessus de la haute il est surcoté d'autant. Le pourcentage seul
+     obligeait à refaire le calcul pour situer le cours. */
+  const band = el("metric-band");
+  if (data.fair_price_low !== null && data.fair_price_high !== null) {
+    band.textContent =
+      `${formatPrice(data.fair_price_low, data.currency)} – ${formatPrice(data.fair_price_high, data.currency)}`;
+    band.className = data.price < data.fair_price_low ? "positive"
+      : data.price > data.fair_price_high ? "negative" : "";
+    band.title = data.price < data.fair_price_low
+      ? "Le cours est sous la borne basse : décote au sens du modèle."
+      : data.price > data.fair_price_high
+        ? "Le cours est au-dessus de la borne haute : surcote au sens du modèle."
+        : "Le cours est dans la zone neutre.";
+  } else {
+    band.textContent = "n/d";
+    band.className = "";
+    band.title = "";
+  }
+
   el("metric-mcap").textContent = formatAmount(data.market_cap, data.currency);
   el("metric-confidence").textContent =
     data.confidence === null ? "n/d" : `${Math.round(data.confidence * 100)}${NBSP}%`;

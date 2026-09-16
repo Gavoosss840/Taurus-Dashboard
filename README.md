@@ -43,7 +43,7 @@ gratuites (SEC EDGAR, bibliothèque de Kenneth French, Yahoo Finance). Une clé
 Financial Modeling Prep dans `.env` améliore la couverture et la fiabilité.
 
 ```bash
-python -m pytest              # 255 tests, sans accès réseau
+python -m pytest              # 260 tests, sans accès réseau
 ```
 
 ---
@@ -72,6 +72,13 @@ d'écraser les deux autres.
 Le score composite est la moyenne pondérée des piliers **disponibles** : si un
 pilier manque, son poids est redistribué plutôt que compté comme un zéro. Un
 signal absent n'est pas un signal neutre.
+
+La carte affiche aussi une **zone d'achat** : le cours auquel le score
+composite basculerait en « sous-évaluée », tous piliers confondus. Un seul
+d'entre eux dépend du cours du jour — la juste valeur Modigliani-Miller ;
+l'alpha porte sur soixante mois passés et le momentum sur douze mois arrêtés il
+y a un mois. Quand les deux autres piliers s'opposent assez fortement, aucun
+cours ne suffit et le dashboard le dit plutôt que d'afficher un prix inventé.
 
 | Score composite | Verdict |
 |---|---|
@@ -282,7 +289,7 @@ taurus_core/              moteur de valorisation
     └── sectors.py        code SIC → secteur GICS
 backend/                  API FastAPI et sérialisation JSON
 frontend/                 interface web (HTML/CSS/JS, sans compilation)
-tests/                    255 tests, sans accès réseau
+tests/                    260 tests, sans accès réseau
 docs/METHODOLOGIE.md      justification des choix et limites du modèle
 ```
 

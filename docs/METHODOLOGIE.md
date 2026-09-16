@@ -454,7 +454,37 @@ indice n'étant pas un prix de marché.
 
 ---
 
-## 7. Diagnostic des sources
+## 7. La zone d'achat
+
+Les seuils du verdict portent sur un score sans dimension, or c'est un cours
+que l'on regarde. Le dashboard traduit donc le seuil en prix : **à quel cours
+ce titre basculerait-il en « sous-évaluée » ?**
+
+Un seul pilier dépend du cours du jour. L'alpha mesure soixante mois de
+performance passée, le momentum douze mois arrêtés il y a un mois : un prix
+hypothétique aujourd'hui ne réécrit pas cette histoire. C'est donc la juste
+valeur Modigliani-Miller, seule à confronter l'entreprise à son cours, qui
+porte la variation, les deux autres piliers conservant leur contribution.
+
+La résolution est itérative, non analytique : la juste valeur n'est pas tout à
+fait indépendante du cours, puisque la dé-leviérisation de Hamada prend D/E en
+valeur de marché et que le modèle de Merton fait entrer la capitalisation dans
+la valeur de firme. Huit itérations suffisent largement à converger.
+
+### Quand aucun cours ne suffit
+
+Le pilier Modigliani-Miller pèse 0,30 et son score est borné à ±2 : il ne peut
+apporter que 0,60 au composite, pour un seuil de verdict à 0,50. Si les deux
+autres piliers contribuent ensemble moins de −0,10, aucune décote, si profonde
+soit-elle, ne fait basculer le verdict — le pilier sature avant.
+
+Le dashboard l'annonce alors comme tel plutôt que d'afficher un prix inventé.
+C'est une information en soi : elle dit que la valorisation n'est pas ce qui
+retient le modèle.
+
+---
+
+## 8. Diagnostic des sources
 
 Le moteur enchaîne des fournisseurs de repli, ce qui le rend robuste et opaque
 à la fois : l'utilisateur voit « prix : Nasdaq Data » sans savoir pourquoi
@@ -515,7 +545,7 @@ clé Financial Modeling Prep.
 
 ---
 
-## 8. Limites connues
+## 9. Limites connues
 
 - **Sociétés déficitaires.** Une perpétuité de flux négatifs n'a pas de sens :
   le pilier Modigliani-Miller est neutralisé lorsque l'EBIT sur douze mois est

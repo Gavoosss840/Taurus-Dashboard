@@ -4,6 +4,8 @@ Les fournisseurs de données sont remplacés par des doublures : ces tests ne
 touchent jamais le réseau et restent donc reproductibles.
 """
 
+import math
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -27,6 +29,12 @@ from taurus_core.valuation import (
 )
 
 CFG = ValuationConfig()
+
+# Les facteurs synthétiques présentent un mois très volatil qui déclenche le
+# régime de krach : la moitié du poids du momentum bascule alors sur l'alpha,
+# ce qui change les seuils et rend certains scénarios inatteignables. Les tests
+# qui portent sur la zone d'achat le neutralisent pour isoler ce qu'ils mesurent.
+CFG_CALM = ValuationConfig(momentum_crash_dampen=False)
 
 
 # ── Doublures ────────────────────────────────────────────────────────────
@@ -692,3 +700,106 @@ def test_a_transient_failure_points_at_the_diagnostic(stub_providers, monkeypatc
         analyze("AAPL", CFG)
 
     assert "Diagnostic des sources" in str(excinfo.value)
+
+
+# ── Zone d'achat : le seuil du verdict traduit en cours ──────────────────
+
+def test_the_buy_price_makes_the_composite_cross_the_threshold(stub_providers):
+    """À ce cours, le score composite doit valoir exactement le seuil.
+
+    C'est la propriété qui définit la zone : annoncer un prix d'achat que le
+    modèle ne confirmerait pas à ce prix-là serait pire que ne rien annoncer.
+    """
+    # Le pilier Modigliani-Miller pèse 0,30 et sature à ±2 : il ne peut
+    # apporter que 0,60 au composite. Il faut donc que les deux autres piliers
+    # ne s'y opposent pas, sans quoi aucun cours ne franchit le seuil.
+    stub_providers["prices"] = build_prices(
+        stub_providers["factors"], alpha=0.012, beta=1.0,
+    )
+    result = analyze("TEST", CFG_CALM)
+    assert math.isfinite(result.buy_below)
+
+    # On rejoue l'analyse en plaçant le cours à la borne annoncée.
+    history = stub_providers["prices"]
+    factor = result.buy_below / history.last_price
+    stub_providers["prices"] = PriceHistory(
+        history.monthly * factor, source=history.source,
+        last_price=result.buy_below, total_return=history.total_return,
+    )
+    stub_providers["quote"] = build_quote(
+        stub_providers["quote"].market_cap * factor,
+    )
+    at_threshold = analyze("TEST", CFG_CALM)
+
+    assert at_threshold.composite_score == pytest.approx(
+        CFG_CALM.verdict_threshold, abs=0.05
+    )
+
+
+def test_a_cheaper_price_moves_the_verdict_towards_undervalued(stub_providers):
+    baseline = analyze("TEST", CFG)
+    stub_providers["quote"] = build_quote(stub_providers["quote"].market_cap * 0.5)
+    cheaper = analyze("TEST", CFG)
+    assert cheaper.composite_score > baseline.composite_score
+
+
+def test_the_band_uses_every_pillar_not_just_valuation(stub_providers):
+    """Le seuil doit bouger quand l'alpha ou le momentum changent.
+
+    Une zone calculée sur le seul pilier Modigliani-Miller serait insensible
+    aux deux autres, et ne répondrait donc pas à la question posée : « à quel
+    prix ce titre devient-il une opportunité selon l'ENSEMBLE du modèle ? »
+    """
+    stub_providers["prices"] = build_prices(
+        stub_providers["factors"], alpha=0.006, beta=1.0,
+    )
+    weak = analyze("TEST", CFG_CALM).buy_below
+
+    # Un alpha plus fort relève le seuil : il reste moins de chemin à
+    # parcourir depuis le cours pour faire basculer le composite.
+    stub_providers["prices"] = build_prices(
+        stub_providers["factors"], alpha=0.012, beta=1.0,
+    )
+    strong = analyze("TEST", CFG_CALM).buy_below
+
+    assert math.isfinite(weak) and math.isfinite(strong)
+    assert strong > weak
+
+
+def test_an_unreachable_threshold_is_reported_as_such(stub_providers):
+    """Quand les autres piliers s'y opposent, aucun cours ne suffit.
+
+    Le pilier Modigliani-Miller est borné à ±2 : passé cette saturation, une
+    décote supplémentaire n'ajoute plus rien au score. Inventer un prix serait
+    trompeur.
+    """
+    from taurus_core.valuation import _price_for_score, _pillar_weights
+
+    pillars = [
+        Pillar(key="alpha", name="alpha", score=-2.0, weight=0.40,
+               available=True, headline="", verdict="", explanation=""),
+        Pillar(key="capital_structure", name="mm", score=0.0, weight=0.30,
+               available=True, headline="", verdict="", explanation=""),
+        Pillar(key="momentum", name="mom", score=-2.0, weight=0.30,
+               available=True, headline="", verdict="", explanation=""),
+    ]
+    weights = _pillar_weights(pillars, False, CFG)
+    price = _price_for_score(
+        CFG.verdict_threshold, pillars, weights, lambda p: 100.0, 50.0, CFG,
+    )
+    assert math.isnan(price)
+
+
+def test_no_band_without_the_valuation_pillar(stub_providers):
+    """Sans fondamentaux, aucun pilier ne dépend du cours.
+
+    C'est le cas d'une cotation locale hors périmètre SEC, sans clé d'API :
+    le verdict tient sur l'alpha et le momentum, qu'un prix hypothétique
+    aujourd'hui ne change pas.
+    """
+    stub_providers["fundamentals"] = None
+    result = analyze("TEST", CFG)
+
+    assert not next(p for p in result.pillars if p.key == "capital_structure").available
+    assert math.isnan(result.buy_below)
+    assert math.isnan(result.sell_above)

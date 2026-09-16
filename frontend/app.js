@@ -121,25 +121,31 @@ function renderVerdict(data) {
   upside.className = data.upside_pct === null ? ""
     : data.upside_pct > 0 ? "positive" : "negative";
 
-  /* La zone de juste prix traduit en COURS le seuil de ±25 % du pilier
-     Modigliani-Miller : sous la borne basse le titre est décoté d'au moins ce
-     seuil, au-dessus de la haute il est surcoté d'autant. Le pourcentage seul
-     obligeait à refaire le calcul pour situer le cours. */
+  /* La zone d'achat traduit en COURS le seuil du verdict, tous piliers
+     confondus : le prix auquel le score composite passerait en
+     « sous-évaluée ». Un seul pilier dépend du cours du jour — la juste
+     valeur Modigliani-Miller ; l'alpha porte sur soixante mois passés et le
+     momentum sur douze mois arrêtés il y a un mois, qu'un prix hypothétique
+     aujourd'hui ne réécrit pas. */
   const band = el("metric-band");
-  if (data.fair_price_low !== null && data.fair_price_high !== null) {
-    band.textContent =
-      `${formatPrice(data.fair_price_low, data.currency)} – ${formatPrice(data.fair_price_high, data.currency)}`;
-    band.className = data.price < data.fair_price_low ? "positive"
-      : data.price > data.fair_price_high ? "negative" : "";
-    band.title = data.price < data.fair_price_low
-      ? "Le cours est sous la borne basse : décote au sens du modèle."
-      : data.price > data.fair_price_high
-        ? "Le cours est au-dessus de la borne haute : surcote au sens du modèle."
-        : "Le cours est dans la zone neutre.";
+  const buy = data.buy_below;
+  const sell = data.sell_above;
+
+  if (buy !== null) {
+    band.textContent = `≤ ${formatPrice(buy, data.currency)}`;
+    band.className = data.price <= buy ? "positive" : "";
+    band.title = data.price <= buy
+      ? "Le cours est dans la zone d'achat du modèle."
+      : `Il faudrait ${formatPercent((buy / data.price - 1) * 100, 0)} depuis le cours actuel.`;
   } else {
-    band.textContent = "n/d";
+    band.textContent = "hors d'atteinte";
     band.className = "";
-    band.title = "";
+    band.title =
+      "Aucun cours ne ferait basculer le verdict en « sous-évaluée » : le "
+      + "pilier Modigliani-Miller sature et les deux autres s'y opposent.";
+  }
+  if (sell !== null) {
+    band.title += ` Seuil de surévaluation : ${formatPrice(sell, data.currency)}.`;
   }
 
   el("metric-mcap").textContent = formatAmount(data.market_cap, data.currency);

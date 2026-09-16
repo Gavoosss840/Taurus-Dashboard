@@ -34,7 +34,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -107,12 +107,12 @@ class Analysis:
     fair_value: float
     upside_pct: float
     market_cap: float
-    # Bornes en PRIX de la zone neutre du pilier Modigliani-Miller : en dessous
-    # de la première le titre est décoté d'au moins le seuil, au-dessus de la
-    # seconde il est surcoté d'autant. Donner l'écart en pourcentage seul
-    # oblige l'utilisateur à refaire le calcul pour situer le cours.
-    fair_price_low: float
-    fair_price_high: float
+    # Seuils du verdict traduits en COURS, tous piliers confondus : sous
+    # `buy_below` le score composite passe en « sous-évaluée », au-dessus de
+    # `sell_above` en « sur-évaluée ». NaN quand aucun cours n'y suffit —
+    # le pilier Modigliani-Miller sature et les deux autres s'y opposent.
+    buy_below: float
+    sell_above: float
 
     pillars: List[Pillar]
     warnings: List[str]
@@ -578,7 +578,7 @@ def _valuation_pillar(
     monthly_prices: pd.Series,
     alpha_result: Optional[AlphaResult],
     cfg: ValuationConfig,
-) -> tuple[float, float, float, Optional[MMResult], List[str]]:
+) -> tuple[float, float, float, Optional[MMResult], List[str], Optional[Callable[[float], float]]]:
     """Calcule la juste valeur MM en ramenant tout dans la devise des comptes.
 
     Deux pièges spécifiques aux titres étrangers :
@@ -627,7 +627,7 @@ def _valuation_pillar(
                 "Capitalisation boursière indisponible : la juste valeur "
                 "Modigliani-Miller n'a pas pu être calculée."
             )
-            return float("nan"), float("nan"), float("nan"), None, notes
+            return float("nan"), float("nan"), float("nan"), None, notes, None
 
     # Capitalisation telle qu'elle sera AFFICHÉE, dans la devise de cotation :
     # la montrer en euros sous un symbole dollar induirait en erreur.
@@ -645,7 +645,7 @@ def _valuation_pillar(
                 f"{market_cap_currency}, et taux de change indisponible : "
                 "la juste valeur Modigliani-Miller n'a pas pu être calculée."
             )
-            return display_cap, float("nan"), float("nan"), None, notes
+            return display_cap, float("nan"), float("nan"), None, notes, None
         market_cap = market_cap * rate
 
     if not math.isfinite(market_cap) or market_cap <= 0:
@@ -653,7 +653,7 @@ def _valuation_pillar(
             "Capitalisation boursière inexploitable : la juste valeur "
             "Modigliani-Miller n'a pas pu être calculée."
         )
-        return display_cap, float("nan"), float("nan"), None, notes
+        return display_cap, float("nan"), float("nan"), None, notes, None
 
     # ── Volatilité des capitaux propres, pour le modèle de Merton ──────── #
     recent = monthly_prices.pct_change(fill_method=None).dropna().tail(cfg.lookback_months)
@@ -679,8 +679,28 @@ def _valuation_pillar(
         if math.isfinite(price_in_accounting) and price_in_accounting > 0:
             implied_shares = market_cap / price_in_accounting
 
+    fundamentals_row = accounting.to_dict()
+
+    def revalue(candidate_price: float) -> float:
+        """Juste valeur par action si le titre cotait `candidate_price`.
+
+        La juste valeur n'est pas tout à fait indépendante du cours : la
+        dé-leviérisation de Hamada prend D/E en valeur de marché, et le modèle
+        de Merton une valeur de firme qui contient la capitalisation. Résoudre
+        le prix d'équilibre demande donc d'itérer, pas de diviser une fois.
+        """
+        if not (math.isfinite(candidate_price) and candidate_price > 0
+                and math.isfinite(implied_shares) and implied_shares > 0):
+            return float("nan")
+        candidate_cap = implied_shares * candidate_price
+        candidate = mm_valuation(
+            fundamentals_row, candidate_cap, equity_vol,
+            implied_shares, levered_beta, cfg,
+        )
+        return candidate.fair_value_per_share if candidate is not None else float("nan")
+
     result = mm_valuation(
-        accounting.to_dict(), market_cap, equity_vol,
+        fundamentals_row, market_cap, equity_vol,
         implied_shares, levered_beta, cfg,
     )
 
@@ -690,7 +710,7 @@ def _valuation_pillar(
             "d'exploitation sur 12 mois glissants est négatif ou nul, une "
             "valorisation par perpétuité n'aurait pas de sens."
         )
-        return display_cap, float("nan"), market_cap, None, notes
+        return display_cap, float("nan"), market_cap, None, notes, None
 
     notes.extend(result.notes)
     alert = leverage_alert(result, accounting.ebit, accounting.total_debt, cfg)
@@ -704,7 +724,7 @@ def _valuation_pillar(
         rate = fx_provider.latest_rate(accounting_currency, quote_currency, cfg)
         fair_value = fair_value * rate if rate is not None else float("nan")
 
-    return display_cap, fair_value, market_cap, result, notes
+    return display_cap, fair_value, market_cap, result, notes, revalue
 
 
 def _no_prices_message(symbol: str, failures: Dict[str, str]) -> str:
@@ -753,6 +773,79 @@ def _no_prices_message(symbol: str, failures: Dict[str, str]) -> str:
         "minutes, ou consultez le « Diagnostic des sources » pour savoir "
         "lequel fait défaut."
     )
+
+
+def _pillar_weights(pillars: List[Pillar], crash_regime: bool,
+                    cfg: ValuationConfig) -> Dict[str, float]:
+    """Poids effectifs des piliers, amortissement de krach compris."""
+    weights = {p.key: p.weight for p in pillars}
+    if crash_regime and cfg.momentum_crash_dampen:
+        transfer = weights.get("momentum", 0.0) * 0.5
+        weights["momentum"] = weights.get("momentum", 0.0) - transfer
+        weights["alpha"] = weights.get("alpha", 0.0) + transfer
+    return weights
+
+
+def _price_for_score(
+    target: float,
+    pillars: List[Pillar],
+    weights: Dict[str, float],
+    revalue: Optional[Callable[[float], float]],
+    current_price: float,
+    cfg: ValuationConfig,
+) -> float:
+    """Cours auquel le score COMPOSITE atteindrait `target`.
+
+    Les seuils de l'algorithme portent sur un score sans dimension, or c'est un
+    cours que l'on regarde. Traduire l'un dans l'autre demande de répondre à :
+    « à quel prix ce titre basculerait-il ? »
+
+    Un seul pilier dépend du cours du jour. L'alpha mesure soixante mois de
+    performance passée et le momentum douze mois arrêtés il y a un mois : un
+    prix hypothétique aujourd'hui ne réécrit pas cette histoire. C'est donc la
+    juste valeur Modigliani-Miller, seule à confronter l'entreprise à son cours,
+    qui porte la variation — les deux autres piliers gardent leur contribution.
+
+    Renvoie NaN lorsque aucun cours n'y suffit : quand les deux autres piliers
+    s'y opposent assez fortement, même une décote extrême ne fait pas basculer
+    le composite, et l'annoncer serait plus honnête qu'un prix inventé.
+    """
+    available = [p for p in pillars if p.available]
+    mm = next((p for p in available if p.key == "capital_structure"), None)
+    if mm is None or revalue is None:
+        return float("nan")
+
+    total_weight = sum(weights[p.key] for p in available)
+    mm_weight = weights.get("capital_structure", 0.0)
+    if total_weight <= 0 or mm_weight <= 0:
+        return float("nan")
+
+    # Contribution figée des piliers insensibles au cours.
+    fixed = sum(p.score * weights[p.key] for p in available if p.key != "capital_structure")
+
+    needed = (target * total_weight - fixed) / mm_weight
+    if abs(needed) > cfg.score_clip:
+        # Au-delà du bornage, le pilier sature : aucun cours ne suffit.
+        return float("nan")
+
+    # Score du pilier → écart de valorisation visé.
+    divergence = needed * cfg.leverage_gap_threshold
+
+    # La juste valeur dépend faiblement du cours (Hamada, Merton) : on itère.
+    price = current_price
+    for _ in range(8):
+        fair = revalue(price)
+        if not math.isfinite(fair) or fair <= 0:
+            return float("nan")
+        candidate = fair / (1.0 + divergence)
+        if not math.isfinite(candidate) or candidate <= 0:
+            return float("nan")
+        converged = abs(candidate / price - 1.0) < 1e-4
+        price = candidate
+        if converged:
+            break
+
+    return float(price)
 
 
 def analyze(ticker: str, cfg: ValuationConfig = DEFAULT_CONFIG) -> Analysis:
@@ -920,6 +1013,7 @@ def analyze(ticker: str, cfg: ValuationConfig = DEFAULT_CONFIG) -> Analysis:
     # ── 4. Juste valeur Modigliani-Miller ──────────────────────────────── #
     mm_result: Optional[MMResult] = None
     fair_value = float("nan")
+    revalue: Optional[Callable[[float], float]] = None
 
     # La capitalisation vient du titre coté : elle est connue même sans
     # comptes, ce qui est le cas d'une cotation locale hors périmètre SEC.
@@ -927,7 +1021,7 @@ def analyze(ticker: str, cfg: ValuationConfig = DEFAULT_CONFIG) -> Analysis:
     market_cap = quote.market_cap if quote is not None else float("nan")
 
     if accounting is not None:
-        market_cap, fair_value, _mm_cap, mm_result, mm_notes = _valuation_pillar(
+        market_cap, fair_value, _mm_cap, mm_result, mm_notes, revalue = _valuation_pillar(
             accounting, quote, history, price, quote_currency,
             monthly_prices, alpha_result, cfg,
         )
@@ -950,13 +1044,16 @@ def analyze(ticker: str, cfg: ValuationConfig = DEFAULT_CONFIG) -> Analysis:
         else float("nan")
     )
 
-    # Bornes de la zone neutre, exprimées en prix : le seuil de l'algorithme
-    # porte sur l'écart relatif, or c'est un cours que l'utilisateur regarde.
-    fair_low = fair_high = float("nan")
-    if math.isfinite(fair_value) and fair_value > 0:
-        threshold = cfg.leverage_gap_threshold
-        fair_low = fair_value / (1.0 + threshold)
-        fair_high = fair_value / (1.0 - threshold)
+    # Bornes en prix du verdict, tous piliers confondus : au-dessous de la
+    # première le composite passe en « sous-évaluée », au-dessus de la seconde
+    # en « sur-évaluée ».
+    weights = _pillar_weights(pillars, crash_regime, cfg)
+    buy_below_price = _price_for_score(
+        cfg.verdict_threshold, pillars, weights, revalue, price, cfg,
+    )
+    sell_above_price = _price_for_score(
+        -cfg.verdict_threshold, pillars, weights, revalue, price, cfg,
+    )
 
     if not [p for p in pillars if p.available]:
         raise TickerError(
@@ -979,8 +1076,8 @@ def analyze(ticker: str, cfg: ValuationConfig = DEFAULT_CONFIG) -> Analysis:
         fair_value=fair_value,
         upside_pct=upside,
         market_cap=market_cap,
-        fair_price_low=fair_low,
-        fair_price_high=fair_high,
+        buy_below=buy_below_price,
+        sell_above=sell_above_price,
         pillars=pillars,
         warnings=warnings,
         data_sources=sources,

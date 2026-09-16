@@ -471,16 +471,26 @@ fait indépendante du cours, puisque la dé-leviérisation de Hamada prend D/E e
 valeur de marché et que le modèle de Merton fait entrer la capitalisation dans
 la valeur de firme. Huit itérations suffisent largement à converger.
 
-### Quand aucun cours ne suffit
+### Quand aucun cours ne suffit — deux cas à ne pas confondre
 
-Le pilier Modigliani-Miller pèse 0,30 et son score est borné à ±2 : il ne peut
-apporter que 0,60 au composite, pour un seuil de verdict à 0,50. Si les deux
-autres piliers contribuent ensemble moins de −0,10, aucune décote, si profonde
-soit-elle, ne fait basculer le verdict — le pilier sature avant.
+**Le pilier de valorisation sature.** Il pèse 0,30 et son score est borné à ±2 :
+il ne peut apporter que 0,60 au composite, pour un seuil de verdict à 0,50. Si
+les deux autres piliers contribuent ensemble moins de −0,10, aucune décote, si
+profonde soit-elle, ne fait basculer le verdict. C'est une information : elle
+dit que la valorisation n'est pas ce qui retient le modèle.
 
-Le dashboard l'annonce alors comme tel plutôt que d'afficher un prix inventé.
-C'est une information en soi : elle dit que la valorisation n'est pas ce qui
-retient le modèle.
+**Le pilier de valorisation est absent.** Sans fondamentaux — une cotation
+locale hors périmètre SEC, sans clé d'API — aucun pilier ne dépend du cours du
+jour, et il n'y a donc rien à résoudre. Ce n'est pas un jugement du modèle,
+c'est une donnée manquante.
+
+Les confondre sous un même libellé laisserait lire un verdict là où il n'y en a
+pas. Le dashboard les distingue : « hors d'atteinte » pour la saturation, « non
+calculable » pour l'absence, chacun avec son explication au survol.
+
+Sur un échantillon de douze grandes capitalisations américaines, la zone est
+calculable dans la moitié des cas, saturée dans l'autre. Hors périmètre SEC,
+elle n'est jamais calculable sans clé d'API.
 
 ---
 

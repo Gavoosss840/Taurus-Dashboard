@@ -113,6 +113,10 @@ class Analysis:
     # le pilier Modigliani-Miller sature et les deux autres s'y opposent.
     buy_below: float
     sell_above: float
+    # Pourquoi la zone n'est pas calculable, le cas échéant :
+    # « pilier_absent » (aucun pilier ne dépend du cours) ou « sature »
+    # (le pilier de valorisation plafonne avant d'emporter le verdict).
+    buy_below_reason: str
 
     pillars: List[Pillar]
     warnings: List[str]
@@ -793,7 +797,7 @@ def _price_for_score(
     revalue: Optional[Callable[[float], float]],
     current_price: float,
     cfg: ValuationConfig,
-) -> float:
+) -> tuple[float, str]:
     """Cours auquel le score COMPOSITE atteindrait `target`.
 
     Les seuils de l'algorithme portent sur un score sans dimension, or c'est un
@@ -806,19 +810,23 @@ def _price_for_score(
     juste valeur Modigliani-Miller, seule à confronter l'entreprise à son cours,
     qui porte la variation — les deux autres piliers gardent leur contribution.
 
-    Renvoie NaN lorsque aucun cours n'y suffit : quand les deux autres piliers
-    s'y opposent assez fortement, même une décote extrême ne fait pas basculer
-    le composite, et l'annoncer serait plus honnête qu'un prix inventé.
+    Renvoie (cours, raison). Le cours vaut NaN dans deux cas bien distincts,
+    que la raison sépare : soit aucun pilier ne dépend du cours — le pilier
+    Modigliani-Miller est indisponible, faute de fondamentaux —, soit il est
+    disponible mais sature avant d'emporter le verdict, les deux autres
+    piliers s'y opposant. Les confondre sous un même « hors d'atteinte »
+    laisserait croire à un jugement du modèle là où il n'y a qu'une donnée
+    manquante.
     """
     available = [p for p in pillars if p.available]
     mm = next((p for p in available if p.key == "capital_structure"), None)
     if mm is None or revalue is None:
-        return float("nan")
+        return float("nan"), "pilier_absent"
 
     total_weight = sum(weights[p.key] for p in available)
     mm_weight = weights.get("capital_structure", 0.0)
     if total_weight <= 0 or mm_weight <= 0:
-        return float("nan")
+        return float("nan"), "pilier_absent"
 
     # Contribution figée des piliers insensibles au cours.
     fixed = sum(p.score * weights[p.key] for p in available if p.key != "capital_structure")
@@ -826,7 +834,7 @@ def _price_for_score(
     needed = (target * total_weight - fixed) / mm_weight
     if abs(needed) > cfg.score_clip:
         # Au-delà du bornage, le pilier sature : aucun cours ne suffit.
-        return float("nan")
+        return float("nan"), "sature"
 
     # Score du pilier → écart de valorisation visé.
     divergence = needed * cfg.leverage_gap_threshold
@@ -836,16 +844,16 @@ def _price_for_score(
     for _ in range(8):
         fair = revalue(price)
         if not math.isfinite(fair) or fair <= 0:
-            return float("nan")
+            return float("nan"), "non_resolu"
         candidate = fair / (1.0 + divergence)
         if not math.isfinite(candidate) or candidate <= 0:
-            return float("nan")
+            return float("nan"), "non_resolu"
         converged = abs(candidate / price - 1.0) < 1e-4
         price = candidate
         if converged:
             break
 
-    return float(price)
+    return float(price), "atteignable"
 
 
 def analyze(ticker: str, cfg: ValuationConfig = DEFAULT_CONFIG) -> Analysis:
@@ -1048,10 +1056,10 @@ def analyze(ticker: str, cfg: ValuationConfig = DEFAULT_CONFIG) -> Analysis:
     # première le composite passe en « sous-évaluée », au-dessus de la seconde
     # en « sur-évaluée ».
     weights = _pillar_weights(pillars, crash_regime, cfg)
-    buy_below_price = _price_for_score(
+    buy_below_price, buy_reason = _price_for_score(
         cfg.verdict_threshold, pillars, weights, revalue, price, cfg,
     )
-    sell_above_price = _price_for_score(
+    sell_above_price, _sell_reason = _price_for_score(
         -cfg.verdict_threshold, pillars, weights, revalue, price, cfg,
     )
 
@@ -1078,6 +1086,7 @@ def analyze(ticker: str, cfg: ValuationConfig = DEFAULT_CONFIG) -> Analysis:
         market_cap=market_cap,
         buy_below=buy_below_price,
         sell_above=sell_above_price,
+        buy_below_reason=buy_reason,
         pillars=pillars,
         warnings=warnings,
         data_sources=sources,

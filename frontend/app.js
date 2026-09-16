@@ -131,21 +131,34 @@ function renderVerdict(data) {
   const buy = data.buy_below;
   const sell = data.sell_above;
 
-  if (buy !== null) {
+  if (buy !== null && buy !== undefined) {
     band.textContent = `≤ ${formatPrice(buy, data.currency)}`;
     band.className = data.price <= buy ? "positive" : "";
     band.title = data.price <= buy
       ? "Le cours est dans la zone d'achat du modèle."
       : `Il faudrait ${formatPercent((buy / data.price - 1) * 100, 0)} depuis le cours actuel.`;
+    if (sell !== null && sell !== undefined) {
+      band.title += ` Seuil de surévaluation : ${formatPrice(sell, data.currency)}.`;
+    }
+  } else if (data.buy_below_reason === "pilier_absent") {
+    /* Deux cas très différents se cachaient derrière « hors d'atteinte ».
+       Ici, aucun pilier ne dépend du cours : la valorisation manque, faute de
+       fondamentaux. Ce n'est pas un jugement du modèle, c'est une donnée
+       absente — et le dire évite de lire un verdict là où il n'y en a pas. */
+    band.textContent = "non calculable";
+    band.className = "";
+    band.title =
+      "Le pilier Modigliani-Miller est indisponible : sans fondamentaux, "
+      + "aucun pilier ne dépend du cours du jour, donc aucun prix ne peut être "
+      + "calculé. Le verdict repose sur l'alpha et le momentum seuls.";
   } else {
     band.textContent = "hors d'atteinte";
     band.className = "";
     band.title =
-      "Aucun cours ne ferait basculer le verdict en « sous-évaluée » : le "
-      + "pilier Modigliani-Miller sature et les deux autres s'y opposent.";
-  }
-  if (sell !== null) {
-    band.title += ` Seuil de surévaluation : ${formatPrice(sell, data.currency)}.`;
+      "Le pilier Modigliani-Miller pèse 30 % et sature à ±2 : il ne peut "
+      + "apporter que 0,60 au score, pour un seuil à 0,50. Les deux autres "
+      + "piliers s'y opposent assez pour qu'aucun cours ne fasse basculer le "
+      + "verdict — la valorisation n'est pas ce qui retient le modèle.";
   }
 
   el("metric-mcap").textContent = formatAmount(data.market_cap, data.currency);

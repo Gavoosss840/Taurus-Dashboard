@@ -784,10 +784,35 @@ def test_an_unreachable_threshold_is_reported_as_such(stub_providers):
                available=True, headline="", verdict="", explanation=""),
     ]
     weights = _pillar_weights(pillars, False, CFG)
-    price = _price_for_score(
+    price, reason = _price_for_score(
         CFG.verdict_threshold, pillars, weights, lambda p: 100.0, 50.0, CFG,
     )
     assert math.isnan(price)
+    # Saturation, pas donnée manquante : les deux cas appellent des messages
+    # opposés à l'écran.
+    assert reason == "sature"
+
+
+def test_a_missing_valuation_pillar_is_not_a_saturation(stub_providers):
+    """Sans fondamentaux, aucun pilier ne dépend du cours.
+
+    Le confondre avec une saturation laisserait croire à un jugement du modèle
+    là où il n'y a qu'une donnée absente.
+    """
+    stub_providers["fundamentals"] = None
+    result = analyze("TEST", CFG)
+
+    assert math.isnan(result.buy_below)
+    assert result.buy_below_reason == "pilier_absent"
+
+
+def test_a_reachable_threshold_says_so(stub_providers):
+    stub_providers["prices"] = build_prices(
+        stub_providers["factors"], alpha=0.012, beta=1.0,
+    )
+    result = analyze("TEST", CFG_CALM)
+    assert math.isfinite(result.buy_below)
+    assert result.buy_below_reason == "atteignable"
 
 
 def test_no_band_without_the_valuation_pillar(stub_providers):

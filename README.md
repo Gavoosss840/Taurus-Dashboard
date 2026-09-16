@@ -43,7 +43,7 @@ gratuites (SEC EDGAR, bibliothèque de Kenneth French, Yahoo Finance). Une clé
 Financial Modeling Prep dans `.env` améliore la couverture et la fiabilité.
 
 ```bash
-python -m pytest              # 191 tests, sans accès réseau
+python -m pytest              # 225 tests, sans accès réseau
 ```
 
 ---
@@ -200,11 +200,16 @@ Unilever, Novo Nordisk… — dont les comptes sont lus dans leur taxonomie
 Modeling Prep est nécessaire ; sans elle, le pilier Modigliani-Miller est
 neutralisé et son poids reporté sur les deux autres.
 
-Nasdaq Data ne réintègre pas les dividendes : lorsque cette source est
-utilisée, l'alpha et le momentum sont sous-estimés à hauteur du rendement du
-dividende, et le dashboard le signale. Elle ne couvre par ailleurs que les
-cotations américaines — une place locale passe nécessairement par Yahoo ou
-Financial Modeling Prep.
+Toutes les sources de cours ne réintègrent pas les dividendes. Une série qui
+ne le fait pas mesure un rendement en capital, et le t-stat de l'alpha s'en
+trouve décalé — jusqu'à +0,94 pour Altria, dont l'alpha mesuré change de signe.
+Le moteur **reconstitue** alors le rendement total depuis les dividendes par
+action des comptes SEC EDGAR, que la même requête a déjà rapportés. Quand la
+couverture est trop mince pour le faire — ExxonMobil ne publie que deux
+périodes trimestrielles — l'avertissement est conservé.
+
+Nasdaq Data ne couvre par ailleurs que les cotations américaines : une place
+locale passe nécessairement par Yahoo ou Financial Modeling Prep.
 
 Les réponses sont mises en cache sur disque (`.cache/`, 12 h par défaut).
 
@@ -242,6 +247,7 @@ taurus_core/              moteur de valorisation
 ├── alpha.py              pilier 1 — régression Fama-French, erreur-type HC1
 ├── capital_structure.py  pilier 2 — juste valeur Modigliani-Miller (APV)
 ├── momentum.py           pilier 3 — momentum 12-1 ajusté de la volatilité
+├── total_return.py       reconstitution des dividendes depuis SEC EDGAR
 ├── valuation.py          orchestration, score composite, verdict
 ├── cache.py              cache disque avec durée de vie
 └── providers/            accès aux données, avec repli entre fournisseurs
@@ -254,7 +260,7 @@ taurus_core/              moteur de valorisation
     └── sectors.py        code SIC → secteur GICS
 backend/                  API FastAPI et sérialisation JSON
 frontend/                 interface web (HTML/CSS/JS, sans compilation)
-tests/                    191 tests, sans accès réseau
+tests/                    225 tests, sans accès réseau
 docs/METHODOLOGIE.md      justification des choix et limites du modèle
 ```
 

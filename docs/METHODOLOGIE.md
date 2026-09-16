@@ -391,7 +391,70 @@ capitalisation par cent.
 
 ---
 
-## 6. Limites connues
+## 6. Reconstitution du rendement total
+
+Lorsque la source de cours ne réintègre pas les dividendes, le moteur les
+reprend dans le fichier `companyfacts` de SEC EDGAR déjà téléchargé pour les
+fondamentaux :
+
+```
+rendement total du mois t = (P_t + D_t) / P_{t-1} − 1
+```
+
+Correction mesurée sur le t-stat de l'alpha :
+
+| Titre | Rendement reconstitué | *t* avant | *t* après | Écart |
+|---|---|---|---|---|
+| Altria | 8,1 % | −0,64 | **+0,30** | +0,94 |
+| Verizon | 6,2 % | −1,59 | −0,85 | +0,74 |
+| AT&T | 6,2 % | −1,15 | −0,53 | +0,62 |
+| Coca-Cola | 3,0 % | −0,24 | +0,13 | +0,36 |
+| Merck | 3,2 % | +0,22 | +0,54 | +0,33 |
+| Apple | 0,5 % | +0,73 | +0,80 | +0,07 |
+
+Altria change de signe : son alpha mesuré était négatif par pure omission des
+dividendes.
+
+### Le quatrième trimestre
+
+Une société publie trois trimestres dans ses 10-Q puis l'exercice entier dans
+son 10-K : le quatrième versement n'a donc pas de période de 90 jours propre.
+La couverture plafonnait à 15 trimestres sur 20, soit un quart du rendement
+perdu. Le résidu « annuel − somme des trois trimestres » le restitue, sous
+réserve qu'il soit positif et du même ordre que les trois autres. La couverture
+passe à 20 sur 20, et la correction de Verizon de +0,56 à +0,74.
+
+### Trois garde-fous
+
+**Divisions d'actions.** Les cours sont ajustés des divisions, les dividendes
+par action déclarés à la SEC ne le sont pas : une division dans la fenêtre
+décale le rapport D/P d'un facteur entier sur sa partie ancienne. Le rendement
+de chaque période est donc ramené dans une bande de 0,4 à 2,5 fois sa médiane.
+Un artefact de division en sort, une hausse ordinaire du dividende non.
+
+**Couverture.** En dessous de huit trimestres dans la fenêtre, la
+reconstitution est abandonnée et l'avertissement conservé — c'est le cas
+d'ExxonMobil, qui ne publie que deux périodes trimestrielles, et de
+Caterpillar.
+
+**Devise.** Pour un certificat de dépôt, les dividendes sont libellés dans la
+devise des comptes et le rapport au titre coté est inconnu : la reconstitution
+est refusée plutôt que devinée.
+
+### Ce que la reconstitution ne fait pas
+
+EDGAR date un dividende par la fin de la période comptable où il est déclaré,
+pas par sa date de détachement ; le décalage peut atteindre un trimestre. Sur
+la moyenne de soixante mois que mesure l'alpha, c'est du second ordre, mais
+cette série ne permet pas de dater un flux au mois près.
+
+Le cours affiché et la capitalisation restent sur la base des cours : seuls la
+régression et le momentum travaillent sur l'indice de rendement total, un
+indice n'étant pas un prix de marché.
+
+---
+
+## 7. Limites connues
 
 - **Sociétés déficitaires.** Une perpétuité de flux négatifs n'a pas de sens :
   le pilier Modigliani-Miller est neutralisé lorsque l'EBIT sur douze mois est
@@ -424,7 +487,12 @@ capitalisation par cent.
   lorsqu'une source réintègre démontrablement les dividendes — la série
   `adjClose` de Financial Modeling Prep, la série `adjclose` de Yahoo. Dès
   qu'un fournisseur retombe sur le cours brut, ou n'en dit rien, le drapeau
-  passe à faux et l'utilisateur est averti.
+  passe à faux.
+
+  Le moteur ne se contente alors pas d'avertir : il **reconstitue** le
+  rendement total depuis les dividendes par action des comptes SEC EDGAR, que
+  la même requête `companyfacts` a déjà rapportés — donc sans appel réseau
+  supplémentaire. Voir la section 7.
 - **Un seul titre à la fois.** Le dashboard ne reconstitue pas le classement
   cross-sectionnel de la stratégie ; il ne dit pas si un titre est plus
   attrayant qu'un autre, seulement s'il s'écarte de sa juste valeur théorique.

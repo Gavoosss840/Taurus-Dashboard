@@ -24,6 +24,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+import pandas as pd
+
 from .. import cache
 from ..config import DEFAULT_CONFIG, ValuationConfig
 from . import http
@@ -69,6 +71,13 @@ class Fundamentals:
     net_income: float = NAN
     fcf: float = NAN
     tax_rate: float = 0.21
+
+    # Dividendes trimestriels par action, indexés en fin de période.  Ils
+    # proviennent du même fichier `companyfacts` que le reste : les extraire
+    # ici ne coûte aucun appel réseau supplémentaire, et ils permettent de
+    # reconstituer un rendement TOTAL quand la source de cours n'en fournit
+    # qu'un rendement en capital.
+    dividends_per_share: Optional["pd.Series"] = None
 
     # Traçabilité
     fiscal_period_end: str = ""
@@ -362,6 +371,121 @@ def _shares_outstanding(facts: dict) -> float:
 
 
 # --------------------------------------------------------------------------- #
+#  Dividendes par action                                                       #
+# --------------------------------------------------------------------------- #
+# Les concepts de dividende par action, par ordre de préférence.  Coca-Cola a
+# cessé d'alimenter « Declared » en 2018 au profit de « CashPaid » : la
+# sélection par fraîcheur (_pick_freshest) évite de renvoyer un chiffre figé.
+_DPS_CONCEPTS = (
+    "CommonStockDividendsPerShareDeclared",
+    "CommonStockDividendsPerShareCashPaid",
+    "CommonStockDividendsPerShareDeclaredButUnpaid",
+    "DividendsPayableAmountPerShare",
+)
+
+# En dessous de ce nombre de trimestres, la série est trop lacunaire pour
+# reconstituer un rendement total crédible.
+MIN_DIVIDEND_QUARTERS = 8
+
+
+def _dividend_facts(book: dict, concept: str, unit: str, span: tuple[int, int]) -> Dict[tuple, dict]:
+    """Faits de dividende d'une durée donnée, dédupliqués sur la période."""
+    entries = ((book.get(concept) or {}).get("units") or {}).get(unit) or []
+    best: Dict[tuple, dict] = {}
+    for fact in entries:
+        if fact.get("val") is None or not fact.get("start") or not fact.get("end"):
+            continue
+        length = _days_between(str(fact["start"]), str(fact["end"]))
+        if length is None or not (span[0] <= length <= span[1]):
+            continue
+        key = (fact["start"], fact["end"])
+        previous = best.get(key)
+        if previous is None or str(fact.get("filed", "")) >= str(previous.get("filed", "")):
+            best[key] = fact
+    return best
+
+
+def _complete_fourth_quarter(
+    quarters: Dict[tuple, dict], annuals: Dict[tuple, dict],
+) -> List[dict]:
+    """Reconstitue le quatrième trimestre, que le rapport annuel absorbe.
+
+    Une société publie trois trimestres dans ses 10-Q puis son exercice entier
+    dans son 10-K : le quatrième versement n'a donc pas de période de 90 jours
+    propre. Il manquait un dividende sur quatre, soit un quart du rendement.
+
+    Le résidu « annuel − somme des trois trimestres » le restitue, à condition
+    qu'il soit positif et du même ordre que les trois autres — au-delà, le
+    rapprochement des périodes est douteux et on renonce.
+    """
+    completed = list(quarters.values())
+
+    for (start, end), annual in annuals.items():
+        inside = [
+            fact for (q_start, q_end), fact in quarters.items()
+            if start <= q_start and q_end <= end
+        ]
+        if len(inside) != 3:
+            continue
+
+        paid = sum(float(f["val"]) for f in inside)
+        residual = float(annual["val"]) - paid
+        average = paid / 3.0
+        if residual <= 0 or average <= 0:
+            continue
+        if not (0.3 * average <= residual <= 3.0 * average):
+            continue
+
+        completed.append({
+            "start": max(f["end"] for f in inside),
+            "end": end,
+            "val": residual,
+            "filed": annual.get("filed", ""),
+        })
+
+    return completed
+
+
+def _quarterly_dividends(
+    book: dict, currency: str = "USD",
+) -> Optional["pd.Series"]:
+    """Dividendes trimestriels par action, indexés en fin de mois.
+
+    Seules les périodes d'environ un trimestre sont retenues : les cumuls
+    depuis le début d'exercice feraient double emploi avec les trimestres
+    qu'ils recouvrent. Le quatrième trimestre, absorbé par le rapport annuel,
+    est reconstitué par différence.
+    """
+    unit = f"{currency}/shares"
+    candidates: List[tuple[int, dict]] = []
+    harvested: Dict[int, List[dict]] = {}
+
+    for rank, concept in enumerate(_DPS_CONCEPTS):
+        quarters = _dividend_facts(book, concept, unit, (80, 100))
+        if not quarters:
+            continue
+        annuals = _dividend_facts(book, concept, unit, (350, 380))
+        facts = _complete_fourth_quarter(quarters, annuals)
+
+        harvested[rank] = facts
+        candidates.append((rank, max(facts, key=lambda f: str(f["end"]))))
+
+    chosen = _pick_freshest(candidates)
+    if chosen is None:
+        return None
+
+    for rank, facts in harvested.items():
+        if any(f["end"] == chosen["end"] and f["val"] == chosen["val"] for f in facts):
+            series = pd.Series(
+                {pd.Timestamp(f["end"]): float(f["val"]) for f in facts}
+            ).sort_index()
+            series.index = series.index.to_period("M").to_timestamp("M")
+            series = series[~series.index.duplicated(keep="last")]
+            return series if len(series) >= MIN_DIVIDEND_QUARTERS else None
+    return None
+
+
+# --------------------------------------------------------------------------- #
 #  Concepts comptables, par taxonomie                                          #
 # --------------------------------------------------------------------------- #
 # Les déposants américains publient en US-GAAP ; les émetteurs privés étrangers
@@ -563,6 +687,7 @@ def _from_edgar(ticker: str, cfg: ValuationConfig) -> Optional[Fundamentals]:
     result.total_assets, _ = instant("assets")
     result.cash, _ = instant("cash")
     result.shares_outstanding = _shares_outstanding(facts)
+    result.dividends_per_share = _quarterly_dividends(book, money)
 
     # ── Flux 12 mois glissants ─────────────────────────────────────────── #
     result.ebit, ebit_end = ttm("ebit")

@@ -360,9 +360,21 @@ def test_market_cap_falls_back_to_shares_times_price(stub_providers):
     assert result.market_cap == pytest.approx(expected)
 
 
-def test_sector_from_the_quote_provider_wins(stub_providers):
-    """Le code SIC de la SEC classe ASML dans les machines industrielles."""
-    stub_providers["fundamentals"] = build_fundamentals(sector="Industrials")
+def test_filed_sic_sector_wins_over_the_quote_provider(stub_providers):
+    """Nasdaq classe Altria, cigarettier, en « Health Care ».
+
+    Le secteur pilote le taux de destruction en faillite du modèle
+    Modigliani-Miller — 35 % pour la santé contre 20 % pour la consommation de
+    base — l'erreur n'est donc pas cosmétique. Le code SIC déposé à la SEC est
+    stable et auditable : il prime.
+    """
+    stub_providers["fundamentals"] = build_fundamentals(sector="Consumer Staples")
+    stub_providers["quote"] = build_quote(1.0e11, sector="Health Care")
+    assert analyze("TEST", CFG).sector == "Consumer Staples"
+
+
+def test_quote_sector_fills_in_when_the_sic_is_unknown(stub_providers):
+    stub_providers["fundamentals"] = build_fundamentals(sector="Unknown")
     stub_providers["quote"] = build_quote(1.0e11, sector="Information Technology")
     assert analyze("TEST", CFG).sector == "Information Technology"
 
@@ -523,3 +535,90 @@ def test_no_months_estimate_when_already_significant():
 def test_r_squared_is_always_reported():
     for tstat in (0.38, 1.17, 2.60):
         assert "variance des rendements" in alpha_pillar_for(tstat).explanation
+
+
+# ── Rendement total reconstitué ──────────────────────────────────────────
+
+def dividend_history(prices, quarterly_yield: float = 0.015):
+    quarters = prices.index[2::3]
+    return pd.Series(prices.reindex(quarters) * quarterly_yield, index=quarters)
+
+
+def test_price_only_source_triggers_reconstruction(stub_providers):
+    """Sans dividendes, l'alpha d'une valeur de rendement est faux de ~0,9 point."""
+    history = stub_providers["prices"]
+    stub_providers["prices"] = PriceHistory(
+        history.monthly, source="Nasdaq Data",
+        last_price=history.last_price, total_return=False,
+    )
+    stub_providers["fundamentals"] = build_fundamentals(
+        dividends_per_share=dividend_history(history.monthly),
+    )
+    result = analyze("TEST", CFG)
+
+    assert result.data_sources.get("dividendes") == "SEC EDGAR (reconstitués)"
+    assert any("reconstitués" in w for w in result.warnings)
+
+
+def test_reconstruction_raises_the_measured_alpha(stub_providers):
+    history = stub_providers["prices"]
+    price_only = PriceHistory(
+        history.monthly, source="Nasdaq Data",
+        last_price=history.last_price, total_return=False,
+    )
+
+    stub_providers["prices"] = price_only
+    stub_providers["fundamentals"] = build_fundamentals()          # sans dividendes
+    without = analyze("TEST", CFG)
+
+    stub_providers["fundamentals"] = build_fundamentals(
+        dividends_per_share=dividend_history(history.monthly),
+    )
+    with_dividends = analyze("TEST", CFG)
+
+    alpha_before = next(p for p in without.pillars if p.key == "alpha")
+    alpha_after = next(p for p in with_dividends.pillars if p.key == "alpha")
+    assert alpha_after.details["alpha_annual"] > alpha_before.details["alpha_annual"]
+
+
+def test_reconstruction_leaves_price_and_market_cap_alone(stub_providers):
+    """Le cours affiché et la capitalisation restent sur la base des cours.
+
+    Seules la régression et le momentum travaillent sur l'indice de rendement
+    total : un indice n'est pas un prix de marché.
+    """
+    history = stub_providers["prices"]
+    stub_providers["prices"] = PriceHistory(
+        history.monthly, source="Nasdaq Data",
+        last_price=history.last_price, total_return=False,
+    )
+    stub_providers["fundamentals"] = build_fundamentals(
+        dividends_per_share=dividend_history(history.monthly),
+    )
+    result = analyze("TEST", CFG)
+
+    assert result.price == pytest.approx(history.last_price)
+    assert result.market_cap == pytest.approx(stub_providers["quote"].market_cap)
+
+
+def test_warning_survives_when_reconstruction_is_impossible(stub_providers):
+    """Exxon ne publie que deux trimestres : l'avertissement doit rester."""
+    history = stub_providers["prices"]
+    stub_providers["prices"] = PriceHistory(
+        history.monthly, source="Nasdaq Data",
+        last_price=history.last_price, total_return=False,
+    )
+    stub_providers["fundamentals"] = build_fundamentals(
+        dividends_per_share=dividend_history(history.monthly).iloc[:3],
+    )
+    result = analyze("TEST", CFG)
+
+    assert "dividendes" not in result.data_sources
+    assert any("sous-estimés" in w for w in result.warnings)
+
+
+def test_total_return_source_is_left_untouched(stub_providers):
+    """Yahoo avec `adjclose` fournit déjà un rendement total."""
+    result = analyze("TEST", CFG)
+    assert "dividendes" not in result.data_sources
+    assert not any("dividende" in w.lower() for w in result.warnings)

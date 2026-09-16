@@ -42,6 +42,7 @@ from .alpha import AlphaResult, compute_alpha
 from .capital_structure import MMResult, leverage_alert, mm_valuation
 from .config import DEFAULT_CONFIG, ValuationConfig
 from .momentum import MomentumResult, compute_momentum
+from .total_return import reconstruct as reconstruct_total_return
 from .providers import factors as factors_provider
 from .providers import fundamentals as fundamentals_provider
 from .providers import fx as fx_provider
@@ -733,12 +734,6 @@ def analyze(ticker: str, cfg: ValuationConfig = DEFAULT_CONFIG) -> Analysis:
             "gratuits limitent parfois le débit des requêtes."
         )
     sources["prix"] = history.source
-    if not history.total_return:
-        warnings.append(
-            f"Les cours proviennent de {history.source}, qui ne réintègre pas "
-            "les dividendes : l'alpha et le momentum sont sous-estimés à "
-            "hauteur du rendement du dividende."
-        )
 
     # Londres cote en pence, pas en livres : sans cette normalisation la
     # capitalisation serait divisée par cent.
@@ -749,6 +744,42 @@ def analyze(ticker: str, cfg: ValuationConfig = DEFAULT_CONFIG) -> Analysis:
     # ── 2. Fondamentaux, capitalisation et secteur ─────────────────────── #
     accounting = fundamentals_provider.get_fundamentals(symbol, cfg)
     quote = quotes_provider.get_quote(symbol, cfg)
+
+    # ── Rendement total ────────────────────────────────────────────────── #
+    # Quand la source de cours ne réintègre pas les dividendes, ils sont
+    # reconstitués depuis les comptes SEC EDGAR déjà téléchargés. Le biais
+    # corrigé atteint 0,9 point de t-stat sur une valeur de rendement et peut
+    # inverser le signe de son alpha.
+    performance_prices = monthly_prices
+    if not history.total_return:
+        rebuilt = None
+        if accounting is not None:
+            rebuilt = reconstruct_total_return(
+                monthly_prices,
+                accounting.dividends_per_share,
+                currency_matches=(accounting.currency or quote_currency).upper()
+                                 == quote_currency,
+            )
+        if rebuilt is not None:
+            performance_prices = rebuilt.prices
+            sources["dividendes"] = "SEC EDGAR (reconstitués)"
+            warnings.extend(rebuilt.notes)
+            warnings.append(
+                f"Les cours de {history.source} excluent les dividendes ; ils "
+                f"ont été reconstitués depuis les comptes SEC EDGAR "
+                f"({rebuilt.quarters_used} trimestres, rendement médian de "
+                f"{rebuilt.annual_yield * 100:.1f} % par an). La SEC date un "
+                "dividende par la fin de la période comptable où il est "
+                "déclaré, pas par son détachement : l'alpha et le momentum sont "
+                "corrigés en niveau, pas au mois près."
+            )
+        else:
+            warnings.append(
+                f"Les cours proviennent de {history.source}, qui ne réintègre "
+                "pas les dividendes, et les comptes SEC EDGAR n'en donnent pas "
+                "assez pour les reconstituer : l'alpha et le momentum sont "
+                "sous-estimés à hauteur du rendement du dividende."
+            )
 
     company_name, sector = symbol, "Unknown"
     accounting_currency = quote_currency
@@ -769,12 +800,20 @@ def analyze(ticker: str, cfg: ValuationConfig = DEFAULT_CONFIG) -> Analysis:
             "Prep est nécessaire."
         )
 
-    # Le secteur du fournisseur de cotation prime : il suit la nomenclature du
-    # marché, là où le code SIC de la SEC classe ASML dans les machines
-    # industrielles plutôt que dans la technologie.
+    # Secteur : le code SIC déposé à la SEC d'abord, le fournisseur de cotation
+    # seulement en secours. Les deux se trompent, mais pas de la même façon —
+    # le SIC, figé sur la nomenclature de 1987, range l'équipement de
+    # semi-conducteurs dans les machines industrielles (corrigé dans
+    # `sectors.py`), tandis que les taxonomies commerciales dérivent
+    # franchement : Nasdaq classe Altria, cigarettier, en « Health Care ».
+    # Le SIC est déposé légalement, stable et auditable, et la table de
+    # correspondance est sous notre contrôle ; c'est donc lui qui prime.
+    # Le secteur pilote le taux de destruction en faillite du modèle
+    # Modigliani-Miller — 35 % pour la santé contre 20 % pour la consommation
+    # de base — l'erreur n'est donc pas cosmétique.
     if quote is not None:
         sources["capitalisation"] = quote.source
-        if quote.sector != "Unknown":
+        if sector in ("", "Unknown") and quote.sector != "Unknown":
             sector = quote.sector
 
     # ── 3. Région et facteurs Fama-French ──────────────────────────────── #
@@ -800,10 +839,10 @@ def analyze(ticker: str, cfg: ValuationConfig = DEFAULT_CONFIG) -> Analysis:
         # Les facteurs internationaux de Kenneth French sont libellés en
         # dollars. Un titre coté en euros ou en yens doit l'être aussi, sans
         # quoi son alpha absorberait la variation de sa devise.
-        regression_prices = monthly_prices
+        regression_prices = performance_prices
         if quote_currency != "USD":
             converted = fx_provider.convert_series(
-                monthly_prices, quote_currency, "USD", cfg,
+                performance_prices, quote_currency, "USD", cfg,
             )
             if converted is not None and len(converted) >= cfg.hard_min_obs:
                 regression_prices = converted

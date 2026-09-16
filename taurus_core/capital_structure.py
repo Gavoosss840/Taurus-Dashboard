@@ -103,7 +103,9 @@ class MMResult:
     nopat: float
     unlevered_beta: float
     discount_rate: float          # r_U, coût des fonds propres non endettés
-    growth_rate: float            # g, croissance perpétuelle retenue
+    growth_rate: float            # taux terminal, après convergence
+    growth_start: float           # croissance de départ, propre à la société
+    implied_growth: float         # croissance de départ qu'impliquerait le cours
     pv_tax_shield: float
     pv_distress: float
     pv_agency: float
@@ -226,11 +228,103 @@ def unlevered_cost_of_capital(
     return float(cfg.risk_free_rate_annual + beta * cfg.equity_risk_premium)
 
 
-def _perpetuity_value(nopat: float, discount: float, growth: float) -> float:
-    """Valeur d'une perpétuité croissante : NOPAT × (1 + g) / (r − g)."""
-    if discount <= growth or not math.isfinite(nopat):
+def initial_growth(fundamentals: Dict, cfg: ValuationConfig = DEFAULT_CONFIG) -> float:
+    """Croissance de départ retenue pour la société, bornée.
+
+    La croissance passée de son chiffre d'affaires sert d'estimation : ses
+    marges fluctuent moins que celles du résultat, donc une marge
+    exceptionnelle ne se confond pas avec une trajectoire de croissance.
+
+    Elle est plafonnée par un maximum économique — aucune société ne croît à
+    20 % pendant dix ans — mais PAS par le taux d'actualisation. La contrainte
+    g < r ne porte que sur la perpétuité terminale, dont la valeur divergerait
+    sinon ; sur un étage fini, une croissance supérieure au taux
+    d'actualisation est le cas normal d'une société en forte expansion.
+    L'y plafonner ramenait Alphabet de 16,7 % à 9,3 % et annulait l'essentiel
+    de la correction recherchée.
+    """
+    observed = fundamentals.get("revenue_cagr", float("nan"))
+    try:
+        observed = float(observed)
+    except (TypeError, ValueError):
+        observed = float("nan")
+    if not math.isfinite(observed):
+        observed = cfg.default_initial_growth
+    return float(np.clip(observed, cfg.min_initial_growth, cfg.max_initial_growth))
+
+
+def _two_stage_value(
+    nopat: float,
+    discount: float,
+    growth_start: float,
+    growth_terminal: float,
+    years: int,
+) -> float:
+    """Valeur actuelle d'un flux croissant convergeant vers son taux terminal.
+
+    Premier étage : `years` exercices dont la croissance décroît linéairement
+    de `growth_start` à `growth_terminal`. Second étage : perpétuité au taux
+    terminal.
+
+    Une perpétuité à taux unique sous-valorise mécaniquement toute société
+    croissant plus vite que ce taux : Alphabet devrait croître à 7 % perpétuels
+    pour justifier son cours, et ressortait donc décoté de 65 % sous un taux
+    uniforme de 2,5 %. La convergence progressive évite par ailleurs la marche
+    d'escalier d'un passage brutal d'un régime à l'autre, et reflète l'érosion
+    observée des avantages concurrentiels.
+    """
+    if not math.isfinite(nopat) or discount <= growth_terminal or years < 1:
         return float("nan")
-    return float(nopat * (1.0 + growth) / (discount - growth))
+
+    # Seul le taux TERMINAL doit rester sous le taux d'actualisation : les
+    # flux du premier étage sont en nombre fini, et leur croissance peut donc
+    # légitimement le dépasser.
+    flow = nopat
+    present_value = 0.0
+    for year in range(1, years + 1):
+        weight = (year - 1) / max(years - 1, 1)
+        growth = growth_start + (growth_terminal - growth_start) * weight
+        flow *= 1.0 + growth
+        present_value += flow / (1.0 + discount) ** year
+
+    terminal = flow * (1.0 + growth_terminal) / (discount - growth_terminal)
+    present_value += terminal / (1.0 + discount) ** years
+    return float(present_value)
+
+
+def _solve_initial_growth(
+    nopat: float,
+    discount: float,
+    growth_terminal: float,
+    years: int,
+    target_value: float,
+    bounds: tuple = (-0.20, 0.60),
+) -> float:
+    """Croissance de départ qui donnerait exactement `target_value`.
+
+    La valeur croît strictement avec la croissance de départ : une dichotomie
+    converge donc sûrement, là où une inversion analytique du modèle à deux
+    étages n'a pas de forme fermée.
+
+    Renvoie NaN si la cible sort de l'intervalle exploré — une société dont le
+    cours n'est justifiable par aucune croissance plausible.
+    """
+    if not (math.isfinite(nopat) and math.isfinite(target_value)) or nopat <= 0:
+        return float("nan")
+
+    low, high = bounds
+    if _two_stage_value(nopat, discount, low, growth_terminal, years) > target_value:
+        return float("nan")
+    if _two_stage_value(nopat, discount, high, growth_terminal, years) < target_value:
+        return float("nan")
+
+    for _ in range(60):
+        middle = (low + high) / 2.0
+        if _two_stage_value(nopat, discount, middle, growth_terminal, years) < target_value:
+            low = middle
+        else:
+            high = middle
+    return float((low + high) / 2.0)
 
 
 def _clean(value: object, default: float = 0.0) -> float:
@@ -349,13 +443,19 @@ def mm_valuation(
 
     discount_rate = unlevered_cost_of_capital(beta_unlevered, cfg)
 
-    # La croissance perpétuelle ne peut pas approcher le taux d'actualisation :
-    # la perpétuité diverge et la juste valeur explose.
+    # Le taux terminal ne peut pas approcher le taux d'actualisation : la
+    # valeur terminale diverge et la juste valeur explose.
     growth_rate = min(cfg.terminal_growth, discount_rate - cfg.min_discount_spread)
+    growth_start = initial_growth(fundamentals, cfg)
 
-    unlevered_value = _perpetuity_value(nopat, discount_rate, growth_rate)
+    unlevered_value = _two_stage_value(
+        nopat, discount_rate, growth_start, growth_rate, cfg.explicit_growth_years,
+    )
     if not math.isfinite(unlevered_value) or unlevered_value <= 0:
-        logger.info("Perpétuité non calculable (r_U=%.4f, g=%.4f).", discount_rate, growth_rate)
+        logger.info(
+            "Valorisation non calculable (r_U=%.4f, g1=%.4f, g=%.4f).",
+            discount_rate, growth_start, growth_rate,
+        )
         return None
 
     # ── 3. Coûts de détresse financière (modèle de Merton) ─────────────── #
@@ -422,18 +522,34 @@ def mm_valuation(
     # exogènes. Plutôt que de livrer un chiffre unique faussement précis, on
     # expose la juste valeur sur un voisinage de (r_U, g).
     frictions = pv_tax_shield - pv_distress - pv_agency - net_debt
+
+    # ── Croissance implicite du cours ──────────────────────────────────── #
+    # Le chiffre le plus lisible du modèle : plutôt que « sur-évaluée de 42 % »,
+    # il dit « le marché price 15 % de croissance quand l'entreprise en a
+    # réalisé 9 ». L'écart de valorisation devient une hypothèse discutable,
+    # et non un verdict à prendre ou à laisser.
+    implied = _solve_initial_growth(
+        nopat, discount_rate, growth_rate, cfg.explicit_growth_years,
+        target_value=market_cap - frictions,
+    )
+
     grid: List[Dict[str, float]] = []
     for rate_shift in (-0.01, 0.0, 0.01):
-        for growth in (0.015, 0.025, 0.035):
+        for growth_shift in (-0.03, 0.0, 0.03):
             rate = discount_rate + rate_shift
-            capped_growth = min(growth, rate - cfg.min_discount_spread)
-            scenario_value = _perpetuity_value(nopat, rate, capped_growth)
+            # C'est la croissance de DÉPART que l'on fait varier : c'est elle
+            # qui distingue les sociétés, le taux terminal étant commun à
+            # toutes.
+            candidate_start = max(growth_start + growth_shift, cfg.min_initial_growth)
+            scenario_value = _two_stage_value(
+                nopat, rate, candidate_start, growth_rate, cfg.explicit_growth_years,
+            )
             if not math.isfinite(scenario_value):
                 continue
             scenario_equity = scenario_value + frictions
             grid.append({
                 "discount_rate": round(rate, 4),
-                "growth_rate": round(capped_growth, 4),
+                "growth_rate": round(candidate_start, 4),
                 "equity_value": scenario_equity,
                 "price_per_share": (
                     scenario_equity / shares if shares > 0 else float("nan")
@@ -451,6 +567,8 @@ def mm_valuation(
         unlevered_beta=beta_unlevered,
         discount_rate=discount_rate,
         growth_rate=growth_rate,
+        growth_start=growth_start,
+        implied_growth=implied,
         pv_tax_shield=pv_tax_shield,
         pv_distress=pv_distress,
         pv_agency=pv_agency,

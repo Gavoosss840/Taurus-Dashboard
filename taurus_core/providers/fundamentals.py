@@ -78,6 +78,11 @@ class Fundamentals:
     # reconstituer un rendement TOTAL quand la source de cours n'en fournit
     # qu'un rendement en capital.
     dividends_per_share: Optional["pd.Series"] = None
+    # Croissance annuelle composée du chiffre d'affaires sur les derniers
+    # exercices. Elle remplace une croissance perpétuelle uniforme, qui
+    # sous-valorisait mécaniquement toute société croissant plus vite.
+    revenue_cagr: float = NAN
+    revenue_years: int = 0
 
     # Traçabilité
     fiscal_period_end: str = ""
@@ -113,6 +118,8 @@ class Fundamentals:
             "tax_rate": self.tax_rate,
             "fcf": self.fcf,
             "sector": self.sector,
+            "revenue_cagr": self.revenue_cagr,
+            "revenue_years": self.revenue_years,
         }
 
 
@@ -368,6 +375,70 @@ def _shares_outstanding(facts: dict) -> float:
         entries.sort(key=lambda e: str(e.get("end", "")), reverse=True)
         return float(entries[0]["val"])
     return NAN
+
+
+# --------------------------------------------------------------------------- #
+#  Croissance historique                                                       #
+# --------------------------------------------------------------------------- #
+# Fenêtre d'observation : assez longue pour lisser un cycle, assez courte pour
+# décrire l'entreprise d'aujourd'hui. Apple publie dix-neuf exercices, dont les
+# premiers décrivent une société qui n'existe plus.
+GROWTH_WINDOW_YEARS = 8
+MIN_GROWTH_YEARS = 4
+
+
+def annual_series(book: dict, concepts: List[str], currency: str = "USD") -> Dict[str, float]:
+    """Valeurs annuelles d'un agrégat, par année de clôture.
+
+    Seules les périodes d'environ un exercice sont retenues ; le dépôt le plus
+    récent l'emporte pour une même année, afin de prendre les chiffres
+    retraités.
+    """
+    best: Dict[str, tuple] = {}
+    for concept in concepts:
+        entries = ((book.get(concept) or {}).get("units") or {}).get(currency) or []
+        for fact in entries:
+            if fact.get("val") is None or not fact.get("start") or not fact.get("end"):
+                continue
+            span = _days_between(str(fact["start"]), str(fact["end"]))
+            if span is None or not (350 <= span <= 380):
+                continue
+            year = str(fact["end"])[:4]
+            filed = str(fact.get("filed", ""))
+            if year not in best or filed >= best[year][1]:
+                best[year] = (float(fact["val"]), filed)
+    return {year: value for year, (value, _) in best.items()}
+
+
+def revenue_growth(book: dict, currency: str = "USD") -> tuple[float, int]:
+    """Croissance annuelle composée du chiffre d'affaires, et années observées.
+
+    Le chiffre d'affaires est préféré au résultat : ses marges fluctuent moins
+    d'un exercice à l'autre, et une marge exceptionnelle ne se confond pas avec
+    une trajectoire de croissance.
+
+    Les extrémités sont lissées sur deux exercices : un exercice de départ
+    déprimé ou un exercice d'arrivée exceptionnel décalerait le taux de
+    plusieurs points.
+    """
+    annual = annual_series(book, _USGAAP_CONCEPTS["revenue"], currency)
+    if len(annual) < MIN_GROWTH_YEARS:
+        annual = annual_series(book, _IFRS_CONCEPTS["revenue"], currency)
+    if len(annual) < MIN_GROWTH_YEARS:
+        return NAN, 0
+
+    years = sorted(annual)[-GROWTH_WINDOW_YEARS:]
+    values = [annual[y] for y in years]
+    if any(v <= 0 for v in values):
+        return NAN, 0
+
+    start = sum(values[:2]) / 2.0
+    end = sum(values[-2:]) / 2.0
+    span = (int(years[-1]) + int(years[-2])) / 2.0 - (int(years[0]) + int(years[1])) / 2.0
+    if span <= 0 or start <= 0:
+        return NAN, 0
+
+    return float((end / start) ** (1.0 / span) - 1.0), len(years)
 
 
 # --------------------------------------------------------------------------- #
@@ -688,6 +759,7 @@ def _from_edgar(ticker: str, cfg: ValuationConfig) -> Optional[Fundamentals]:
     result.cash, _ = instant("cash")
     result.shares_outstanding = _shares_outstanding(facts)
     result.dividends_per_share = _quarterly_dividends(book, money)
+    result.revenue_cagr, result.revenue_years = revenue_growth(book, money)
 
     # ── Flux 12 mois glissants ─────────────────────────────────────────── #
     result.ebit, ebit_end = ttm("ebit")

@@ -317,8 +317,9 @@ def _build_mm_pillar(result: Optional[MMResult], cfg: ValuationConfig) -> Pillar
         f"{_format_amount(result.unlevered_value)}, en actualisant un résultat "
         f"d'exploitation net d'impôt de {_format_amount(result.nopat)} au taux "
         f"de {result.discount_rate * 100:.1f} % (bêta dé-leviérisé de "
-        f"{result.unlevered_beta:.2f}) avec une croissance perpétuelle de "
-        f"{result.growth_rate * 100:.1f} %. S'y ajoute le bouclier fiscal de la "
+        f"{result.unlevered_beta:.2f}), avec une croissance de "
+        f"{result.growth_start * 100:.1f} % par an convergeant vers "
+        f"{result.growth_rate * 100:.1f} % en dix ans. S'y ajoute le bouclier fiscal de la "
         f"dette pour {_format_amount(result.pv_tax_shield)} ; s'en retranchent "
         f"les coûts de détresse financière pour {_format_amount(result.pv_distress)} "
         f"(probabilité de défaut à un an : {result.prob_default * 100:.2f} %, "
@@ -326,6 +327,20 @@ def _build_mm_pillar(result: Optional[MMResult], cfg: ValuationConfig) -> Pillar
         f"coûts d'agence pour {_format_amount(result.pv_agency)}, et la dette "
         f"nette pour {_format_amount(result.net_debt)}."
     )
+
+    # Le chiffre le plus discutable du modèle, donc le plus utile à montrer :
+    # l'écart de valorisation devient une hypothèse de croissance, et non un
+    # verdict à prendre ou à laisser.
+    if math.isfinite(result.implied_growth):
+        gap = result.implied_growth - result.growth_start
+        if abs(gap) >= 0.005:
+            sense = "au-delà de" if gap > 0 else "en deçà de"
+            explanation += (
+                f" Autrement dit, le cours actuel suppose une croissance de "
+                f"{result.implied_growth * 100:.1f} % par an, soit "
+                f"{abs(gap) * 100:.1f} points {sense} ce que la société a "
+                "réalisé."
+            )
 
     return Pillar(
         key="capital_structure",
@@ -345,6 +360,11 @@ def _build_mm_pillar(result: Optional[MMResult], cfg: ValuationConfig) -> Pillar
             "unlevered_beta": result.unlevered_beta,
             "discount_rate": result.discount_rate,
             "growth_rate": result.growth_rate,
+            "growth_start": result.growth_start,
+            "implied_growth": (
+                result.implied_growth
+                if math.isfinite(result.implied_growth) else None
+            ),
             "sensitivity_grid": result.sensitivity_grid,
             "market_cap": result.market_cap,
             "net_debt": result.net_debt,

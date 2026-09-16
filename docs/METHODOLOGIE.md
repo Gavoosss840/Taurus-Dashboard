@@ -357,6 +357,71 @@ couverte — le dollar de Taïwan, par exemple — neutralise le pilier plutôt 
 de supposer la parité : comparer une capitalisation en dollars à des comptes
 en TWD représenterait un facteur trente, silencieusement.
 
+### Une perpétuité à taux unique sous-valorise la croissance
+
+Le modèle actualisait le résultat d'exploitation net d'impôt en une perpétuité
+croissant à 2,5 % — le même taux pour toutes les sociétés. Toute entreprise
+dont le marché attend davantage ressortait donc mécaniquement sur-évaluée.
+
+Alphabet en était l'illustration : juste valeur de 121 $ contre un cours de
+345 $, soit une décote affichée de 65 %, et une « zone d'achat » à 107 $ —
+69 % sous le marché, donc inexploitable. En inversant le modèle, le cours
+supposait une croissance perpétuelle de 7,06 %, quand le taux retenu était de
+2,5 %. Le verdict ne mesurait pas une survalorisation ; il mesurait l'écart
+entre la croissance réelle de l'entreprise et une hypothèse uniforme.
+
+La valorisation se fait désormais en **deux étages** :
+
+```
+V_U = Σ  NOPAT_t / (1 + r_U)^t   +   NOPAT_N · (1 + g∞) / (r_U − g∞) / (1 + r_U)^N
+     t=1..N
+```
+
+où la croissance décroît linéairement de `g₁` — propre à la société — vers
+`g∞ = 2,5 %` sur dix ans. La convergence progressive évite la marche
+d'escalier d'un passage brutal d'un régime à l'autre et reflète l'érosion
+observée des avantages concurrentiels.
+
+`g₁` est estimée sur la croissance annuelle composée du **chiffre d'affaires**
+des huit derniers exercices, lus dans les dépôts SEC. Le chiffre d'affaires est
+préféré au résultat : ses marges fluctuent moins, donc une marge exceptionnelle
+ne se confond pas avec une trajectoire de croissance. Les deux extrémités sont
+lissées sur deux exercices, faute de quoi un exercice de départ déprimé ou
+d'arrivée exceptionnel décalerait le taux de plusieurs points.
+
+Elle est plafonnée à 15 % — aucune société ne croît à 20 % pendant dix ans —
+mais **pas** par le taux d'actualisation. La contrainte `g < r` ne porte que
+sur la perpétuité terminale, dont la valeur divergerait sinon ; sur un étage
+fini, une croissance supérieure au taux d'actualisation est le cas normal d'une
+société en expansion. L'y plafonner ramenait Alphabet de 16,7 % à 9,3 % et
+annulait l'essentiel de la correction.
+
+| Titre | Divergence avant | Après | Juste valeur |
+|---|---|---|---|
+| Alphabet | −65,1 % | −41,8 % | 121 $ → 202 $ |
+| Microsoft | −53,4 % | −23,5 % | — |
+| Merck | +26,9 % | +63,4 % | — |
+
+### La croissance implicite du cours
+
+Le modèle s'inverse : à quelle croissance de départ le cours actuel
+correspond-il ? La valeur croissant strictement avec ce taux, une dichotomie
+converge sûrement, là où le modèle à deux étages n'a pas d'inverse analytique.
+
+| Titre | Croissance réalisée | Impliquée par le cours |
+|---|---|---|
+| Nvidia | 15,0 % (plafonnée) | 51,9 % |
+| Apple | 7,4 % | 30,8 % |
+| Alphabet | 15,0 % (plafonnée) | 28,9 % |
+| Coca-Cola | 4,8 % | 12,3 % |
+| Johnson & Johnson | 2,1 % | 0,0 % |
+| Merck | 8,0 % | −2,1 % |
+
+C'est le chiffre le plus utile du modèle. Plutôt que « sur-évaluée de 42 % »,
+il dit « le marché price 29 % de croissance quand l'entreprise en a réalisé
+15 ». L'écart de valorisation devient une hypothèse discutable, et non un
+verdict à prendre ou à laisser.
+
 ### Capitalisation d'un certificat de dépôt
 
 Le calcul naturel, actions en circulation × dernier cours, est faux pour un

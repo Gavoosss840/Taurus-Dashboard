@@ -43,7 +43,7 @@ gratuites (SEC EDGAR, bibliothèque de Kenneth French, Yahoo Finance). Une clé
 Financial Modeling Prep dans `.env` améliore la couverture et la fiabilité.
 
 ```bash
-python -m pytest              # 260 tests, sans accès réseau
+python -m pytest              # 285 tests, sans accès réseau
 ```
 
 ---
@@ -132,8 +132,16 @@ Modigliani-Miller :
 NOPAT = EBIT × (1 − τ)
 β_U   = β_L / (1 + (1 − τ)·D/E)          dé-leviérisation de Hamada
 r_U   = rf + β_U × prime de risque       MEDAF sans effet de levier
-V_U   = NOPAT × (1 + g) / (r_U − g)      perpétuité croissante
+V_U   = deux étages : croissance propre à la société sur dix ans,
+        convergeant vers 2,5 % à l'infini
 ```
+
+La croissance de départ vient du chiffre d'affaires des huit derniers
+exercices, lus dans les dépôts SEC. Une perpétuité à taux unique sous-valorisait
+mécaniquement toute société croissant plus vite : Alphabet ressortait décoté de
+65 %, avec une zone d'achat 69 % sous le marché. Le dashboard affiche aussi la
+**croissance implicite du cours** — celle qu'il faudrait pour justifier le prix
+actuel — qui transforme l'écart de valorisation en hypothèse discutable.
 
 Les trois frottements — bouclier fiscal, coûts de détresse de Merton, coûts
 d'agence — sont calculés exactement comme dans l'algorithme de production.
@@ -289,7 +297,7 @@ taurus_core/              moteur de valorisation
     └── sectors.py        code SIC → secteur GICS
 backend/                  API FastAPI et sérialisation JSON
 frontend/                 interface web (HTML/CSS/JS, sans compilation)
-tests/                    260 tests, sans accès réseau
+tests/                    285 tests, sans accès réseau
 docs/METHODOLOGIE.md      justification des choix et limites du modèle
 ```
 

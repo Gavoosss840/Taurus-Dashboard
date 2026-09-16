@@ -206,7 +206,13 @@ function detailRows(pillar, currency) {
     rows.push(["Résultat d'exploitation net d'impôt", formatAmount(d.nopat, currency)]);
     rows.push(["Valeur de la firme non endettée", formatAmount(d.unlevered_value, currency)]);
     rows.push(["Taux d'actualisation r_U", pct(d.discount_rate)]);
-    rows.push(["Croissance perpétuelle g", pct(d.growth_rate)]);
+    rows.push(["Croissance retenue (10 ans)", pct(d.growth_start)]);
+    rows.push(["Croissance terminale", pct(d.growth_rate)]);
+    rows.push([
+      "Croissance implicite du cours",
+      d.implied_growth === null || d.implied_growth === undefined
+        ? "hors bornes" : pct(d.implied_growth),
+    ]);
     rows.push(["Bêta dé-leviérisé", formatNumber(d.unlevered_beta, 2)]);
     rows.push(["Bouclier fiscal de la dette", formatAmount(d.pv_tax_shield, currency)]);
     rows.push(["Coûts de détresse financière", formatAmount(d.pv_distress, currency)]);
@@ -237,10 +243,10 @@ function renderSensitivity(grid, basePrice, currency, baseRate, baseGrowth) {
   const lookup = new Map(grid.map((c) => [`${c.discount_rate}|${c.growth_rate}`, c]));
 
   let html = '<div class="sensitivity"><p class="sensitivity-title">'
-    + 'Juste valeur par action selon le taux d\'actualisation et la croissance '
+    + 'Juste valeur par action selon le taux d\'actualisation et la croissance de départ '
     + '<span class="sensitivity-hint">(encadré : scénario retenu)</span></p>'
     + '<table><thead><tr>'
-    + `<th>r_U \\ g</th>`;
+    + `<th>r_U \\ g₁</th>`;
   for (const g of growths) {
     html += `<th>${formatNumber(g * 100, 1)}${NBSP}%</th>`;
   }

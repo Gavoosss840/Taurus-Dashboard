@@ -56,9 +56,22 @@ class ValuationConfig:
     # du bêta dé-leviérisé issu de la régression Fama-French ; la prime de
     # risque des actions est le paramètre exogène le plus structurant.
     equity_risk_premium: float = 0.05      # prime de risque actions (US, long terme)
-    terminal_growth: float = 0.025         # croissance perpétuelle du résultat
+    terminal_growth: float = 0.025         # croissance à l'infini, après convergence
     min_discount_spread: float = 0.02      # écart plancher entre r_U et g
     default_unlevered_beta: float = 1.0    # si le bêta n'est pas estimable
+
+    # Valorisation en deux étages. Une croissance perpétuelle uniforme
+    # sous-valorise mécaniquement toute société croissant plus vite qu'elle :
+    # Alphabet devrait croître à 7 % perpétuels pour justifier son cours, et
+    # ressortait donc décoté de 65 % avec un taux unique de 2,5 %.
+    #
+    # Premier étage : la croissance propre à la société, estimée sur son
+    # chiffre d'affaires, convergeant linéairement vers le taux terminal.
+    # Second étage : perpétuité au taux terminal.
+    explicit_growth_years: int = 10        # durée de la convergence
+    max_initial_growth: float = 0.15       # plafond : nul ne croît à 20 % dix ans
+    min_initial_growth: float = -0.05      # plancher : activité en déclin
+    default_initial_growth: float = 0.03   # si l'historique est indisponible
 
     # ------------------------------------------------------------------ #
     #  Momentum (Jegadeesh & Titman 12-1, ajusté de la volatilité)        #

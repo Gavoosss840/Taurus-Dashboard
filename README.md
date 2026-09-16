@@ -11,18 +11,39 @@ action et du détail de chaque calcul.
 
 ## Démarrage
 
+**macOS / Linux**
+
 ```bash
 pip install -r requirements.txt
-cp .env.example .env        # facultatif : renseigne une clé d'API et le contact SEC
+cp .env.example .env        # facultatif : clé d'API et contact SEC
 ./run.sh                    # → http://127.0.0.1:8000
 ```
+
+**Windows (PowerShell)**
+
+```powershell
+pip install -r requirements.txt
+copy .env.example .env      # facultatif : clé d'API et contact SEC
+.\run.ps1                   # → http://127.0.0.1:8000
+```
+
+`run.sh` est un script bash : PowerShell ne l'exécute pas, d'où `run.ps1`.
+Si la stratégie d'exécution de PowerShell bloque le script, lancez le serveur
+directement :
+
+```powershell
+python -m uvicorn backend.app:app --host 127.0.0.1 --port 8000
+```
+
+Les deux lanceurs acceptent un port en argument (`./run.sh 8080`,
+`.\run.ps1 8080`).
 
 Aucune clé d'API n'est requise. Le dashboard fonctionne sur des sources
 gratuites (SEC EDGAR, bibliothèque de Kenneth French, Yahoo Finance). Une clé
 Financial Modeling Prep dans `.env` améliore la couverture et la fiabilité.
 
 ```bash
-python3 -m pytest             # 129 tests, sans accès réseau
+python -m pytest              # 134 tests, sans accès réseau
 ```
 
 ---
@@ -172,7 +193,7 @@ taurus_core/              moteur de valorisation
 └── providers/            accès aux données, avec repli entre fournisseurs
 backend/                  API FastAPI et sérialisation JSON
 frontend/                 interface web (HTML/CSS/JS, sans compilation)
-tests/                    129 tests, sans accès réseau
+tests/                    134 tests, sans accès réseau
 docs/METHODOLOGIE.md      justification des choix et limites du modèle
 ```
 

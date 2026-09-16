@@ -44,12 +44,17 @@ from .config import DEFAULT_CONFIG, ValuationConfig
 from .momentum import MomentumResult, compute_momentum
 from .providers import factors as factors_provider
 from .providers import fundamentals as fundamentals_provider
+from .providers import fx as fx_provider
 from .providers import prices as prices_provider
+from .providers import quotes as quotes_provider
+from .providers import regions as regions_provider
 
 logger = logging.getLogger(__name__)
 
-# Un ticker boursier : lettres, chiffres, point, tiret (BRK-B, BRK.B, RDS-A).
-TICKER_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,9}$")
+# Un ticker boursier, cotation américaine ou place locale : lettres, chiffres,
+# point, tiret. Le suffixe de place peut allonger la chaîne — « RELIANCE.NS »
+# fait onze caractères, « BRK-B » cinq, « 7203.T » six.
+TICKER_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,15}$")
 
 VERDICT_UNDERVALUED = "SOUS-ÉVALUÉE"
 VERDICT_OVERVALUED = "SUR-ÉVALUÉE"
@@ -86,7 +91,9 @@ class Analysis:
     ticker: str
     company_name: str
     sector: str
-    currency: str
+    currency: str            # devise de cotation
+    region: str              # région Fama-French retenue
+    region_label: str
 
     verdict: str
     verdict_label: str           # libellé nuancé (« fortement sous-évaluée »)
@@ -516,12 +523,166 @@ def normalise_ticker(ticker: str) -> str:
     return candidate
 
 
+# --------------------------------------------------------------------------- #
+#  Pilier Modigliani-Miller : rapprochement des devises                        #
+# --------------------------------------------------------------------------- #
+
+def _valuation_pillar(
+    accounting,
+    quote,
+    history,
+    price: float,
+    quote_currency: str,
+    monthly_prices: pd.Series,
+    alpha_result: Optional[AlphaResult],
+    cfg: ValuationConfig,
+) -> tuple[float, float, float, Optional[MMResult], List[str]]:
+    """Calcule la juste valeur MM en ramenant tout dans la devise des comptes.
+
+    Deux pièges spécifiques aux titres étrangers :
+
+      • Les comptes et la cotation ne sont pas toujours dans la même devise.
+        ASML publie en euros et cote en dollars à New York : comparer
+        directement ses fondamentaux à sa capitalisation mesurerait la parité
+        EUR/USD, pas une décote.
+
+      • Un certificat de dépôt américain ne vaut pas une action. Un ADR Toyota
+        représente dix actions ordinaires, or SEC EDGAR publie le nombre
+        d'ACTIONS ORDINAIRES. Reconstituer la capitalisation par « actions ×
+        cours » la multiplierait par dix. On interroge donc un fournisseur qui
+        connaît le titre coté, et la reconstitution n'intervient qu'à défaut,
+        avec un avertissement.
+
+    Renvoie (capitalisation dans la devise de COTATION — celle que l'utilisateur
+    voit à côté du cours —, juste valeur par action, capitalisation dans la
+    devise des comptes, résultat MM, messages).
+    """
+    notes: List[str] = []
+    accounting_currency = (accounting.currency or quote_currency).upper()
+
+    # ── Capitalisation, dans la devise des comptes ─────────────────────── #
+    market_cap = float("nan")
+    market_cap_currency = accounting_currency
+
+    if quote is not None and math.isfinite(quote.market_cap):
+        market_cap = quote.market_cap
+        market_cap_currency = (quote.currency or quote_currency).upper()
+    else:
+        shares = accounting.shares_outstanding
+        if math.isfinite(shares) and shares > 0 and math.isfinite(price):
+            market_cap = shares * price
+            market_cap_currency = quote_currency
+            if accounting_currency != quote_currency:
+                notes.append(
+                    "Capitalisation reconstituée à partir du nombre d'actions "
+                    "publié à la SEC et du cours. S'il s'agit d'un certificat "
+                    "de dépôt (ADR) représentant plusieurs actions ordinaires, "
+                    "elle est surestimée d'autant et la juste valeur est à "
+                    "lire avec prudence."
+                )
+        else:
+            notes.append(
+                "Capitalisation boursière indisponible : la juste valeur "
+                "Modigliani-Miller n'a pas pu être calculée."
+            )
+            return float("nan"), float("nan"), float("nan"), None, notes
+
+    # Capitalisation telle qu'elle sera AFFICHÉE, dans la devise de cotation :
+    # la montrer en euros sous un symbole dollar induirait en erreur.
+    display_cap = market_cap
+    if market_cap_currency != quote_currency:
+        display_rate = fx_provider.latest_rate(market_cap_currency, quote_currency, cfg)
+        display_cap = market_cap * display_rate if display_rate is not None else float("nan")
+
+    # Conversion vers la devise des comptes, pour l'écran Modigliani-Miller.
+    if market_cap_currency != accounting_currency:
+        rate = fx_provider.latest_rate(market_cap_currency, accounting_currency, cfg)
+        if rate is None:
+            notes.append(
+                f"Comptes en {accounting_currency}, capitalisation en "
+                f"{market_cap_currency}, et taux de change indisponible : "
+                "la juste valeur Modigliani-Miller n'a pas pu être calculée."
+            )
+            return display_cap, float("nan"), float("nan"), None, notes
+        market_cap = market_cap * rate
+
+    if not math.isfinite(market_cap) or market_cap <= 0:
+        notes.append(
+            "Capitalisation boursière inexploitable : la juste valeur "
+            "Modigliani-Miller n'a pas pu être calculée."
+        )
+        return display_cap, float("nan"), float("nan"), None, notes
+
+    # ── Volatilité des capitaux propres, pour le modèle de Merton ──────── #
+    recent = monthly_prices.pct_change(fill_method=None).dropna().tail(cfg.lookback_months)
+    equity_vol = float(recent.std() * np.sqrt(12)) if len(recent) >= 12 else 0.30
+
+    # Le bêta vient de la régression Fama-French : même titre, même fenêtre,
+    # donc un bêta cohérent avec l'alpha affiché à côté.
+    levered_beta = (
+        alpha_result.betas.get("Mkt-RF", float("nan"))
+        if alpha_result is not None else float("nan")
+    )
+
+    # Le nombre d'actions sert à ramener la juste valeur à un prix. Il doit
+    # correspondre au titre COTÉ : on le déduit de la capitalisation et du
+    # cours, tous deux relatifs au même titre, plutôt que du chiffre SEC qui
+    # porte sur les actions ordinaires.
+    implied_shares = float("nan")
+    if math.isfinite(price) and price > 0:
+        price_in_accounting = price
+        if quote_currency != accounting_currency:
+            rate = fx_provider.latest_rate(quote_currency, accounting_currency, cfg)
+            price_in_accounting = price * rate if rate is not None else float("nan")
+        if math.isfinite(price_in_accounting) and price_in_accounting > 0:
+            implied_shares = market_cap / price_in_accounting
+
+    result = mm_valuation(
+        accounting.to_dict(), market_cap, equity_vol,
+        implied_shares, levered_beta, cfg,
+    )
+
+    if result is None:
+        notes.append(
+            "Juste valeur Modigliani-Miller non calculable : le résultat "
+            "d'exploitation sur 12 mois glissants est négatif ou nul, une "
+            "valorisation par perpétuité n'aurait pas de sens."
+        )
+        return display_cap, float("nan"), market_cap, None, notes
+
+    notes.extend(result.notes)
+    alert = leverage_alert(result, accounting.ebit, accounting.total_debt, cfg)
+    if alert:
+        notes.append(alert)
+
+    # La juste valeur par action revient dans la devise de cotation, pour être
+    # comparable au cours affiché.
+    fair_value = result.fair_value_per_share
+    if math.isfinite(fair_value) and accounting_currency != quote_currency:
+        rate = fx_provider.latest_rate(accounting_currency, quote_currency, cfg)
+        fair_value = fair_value * rate if rate is not None else float("nan")
+
+    return display_cap, fair_value, market_cap, result, notes
+
+
 def analyze(ticker: str, cfg: ValuationConfig = DEFAULT_CONFIG) -> Analysis:
     """Analyse complète d'un titre : les trois piliers, puis le verdict.
 
+    Fonctionne sur une cotation américaine (« AAPL », « ASML ») comme sur une
+    place locale (« MC.PA », « 7203.T », « 0700.HK »). Trois différences de
+    traitement en découlent :
+
+      • la régression utilise le jeu de facteurs Fama-French de la RÉGION du
+        titre, et non systématiquement celui des États-Unis ;
+      • les facteurs internationaux étant libellés en dollars, un titre coté
+        dans une autre devise est converti avant la régression ;
+      • l'écran Modigliani-Miller ramène fondamentaux et capitalisation dans
+        une même devise — ASML publie en euros et cote en dollars.
+
     Raises
     ------
-    TickerError : ticker mal formé, ou aucune donnée de marché disponible.
+    InvalidTickerError : ticker mal formé.
+    TickerError        : aucune donnée de marché disponible.
     """
     started = time.perf_counter()
     symbol = normalise_ticker(ticker)
@@ -533,8 +694,9 @@ def analyze(ticker: str, cfg: ValuationConfig = DEFAULT_CONFIG) -> Analysis:
     if history is None:
         raise TickerError(
             f"Aucune donnée de marché trouvée pour « {symbol} ». Vérifiez le "
-            "ticker, ou réessayez : les fournisseurs gratuits limitent parfois "
-            "le débit des requêtes."
+            "ticker — une place locale s'écrit avec son suffixe, par exemple "
+            "MC.PA, 7203.T ou 0700.HK — ou réessayez : les fournisseurs "
+            "gratuits limitent parfois le débit des requêtes."
         )
     sources["prix"] = history.source
     if not history.total_return:
@@ -544,8 +706,47 @@ def analyze(ticker: str, cfg: ValuationConfig = DEFAULT_CONFIG) -> Analysis:
             "hauteur du rendement du dividende."
         )
 
-    # ── 2. Facteurs Fama-French ────────────────────────────────────────── #
-    factor_frame = factors_provider.get_ff5_factors(cfg)
+    # Londres cote en pence, pas en livres : sans cette normalisation la
+    # capitalisation serait divisée par cent.
+    quote_currency, subunit_factor = fx_provider.normalise_currency(history.currency)
+    price = history.last_price * subunit_factor
+    monthly_prices = history.monthly * subunit_factor
+
+    # ── 2. Fondamentaux, capitalisation et secteur ─────────────────────── #
+    accounting = fundamentals_provider.get_fundamentals(symbol, cfg)
+    quote = quotes_provider.get_quote(symbol, cfg)
+
+    company_name, sector = symbol, "Unknown"
+    accounting_currency = quote_currency
+    country = ""
+
+    if accounting is not None:
+        sources["fondamentaux"] = accounting.source
+        company_name = accounting.company_name or symbol
+        sector = accounting.sector
+        accounting_currency = (accounting.currency or quote_currency).upper()
+        country = accounting.country
+        warnings.extend(accounting.warnings)
+    else:
+        warnings.append(
+            "Fondamentaux comptables introuvables : le pilier Modigliani-Miller "
+            "est neutralisé et son poids reporté sur les deux autres. Hors des "
+            "sociétés déposant auprès de la SEC, une clé Financial Modeling "
+            "Prep est nécessaire."
+        )
+
+    # Le secteur du fournisseur de cotation prime : il suit la nomenclature du
+    # marché, là où le code SIC de la SEC classe ASML dans les machines
+    # industrielles plutôt que dans la technologie.
+    if quote is not None:
+        sources["capitalisation"] = quote.source
+        if quote.sector != "Unknown":
+            sector = quote.sector
+
+    # ── 3. Région et facteurs Fama-French ──────────────────────────────── #
+    guess = regions_provider.detect_region(symbol, country, accounting_currency)
+    factor_frame = factors_provider.get_ff5_factors(guess.region, cfg)
+
     if factor_frame is None:
         warnings.append(
             "Facteurs Fama-French indisponibles : l'alpha et la comparaison de "
@@ -554,79 +755,52 @@ def analyze(ticker: str, cfg: ValuationConfig = DEFAULT_CONFIG) -> Analysis:
         alpha_result = None
         momentum_result = None
     else:
-        sources["facteurs"] = "Kenneth R. French Data Library"
-        alpha_result = compute_alpha(history.returns, factor_frame, cfg)
-        momentum_result = compute_momentum(
-            history.monthly, factors_provider.market_returns(factor_frame), cfg,
-        )
-
-    # ── 3. Fondamentaux et juste valeur MM ─────────────────────────────── #
-    accounting = fundamentals_provider.get_fundamentals(symbol, cfg)
-    mm_result: Optional[MMResult] = None
-    company_name, sector = symbol, "Unknown"
-    market_cap = float("nan")
-
-    if accounting is None:
-        warnings.append(
-            "Fondamentaux comptables introuvables : le pilier Modigliani-Miller "
-            "est neutralisé et son poids reporté sur les deux autres."
-        )
-    else:
-        sources["fondamentaux"] = accounting.source
-        company_name = accounting.company_name or symbol
-        sector = accounting.sector
-        warnings.extend(accounting.warnings)
-
-        # La capitalisation se déduit du dernier cours et du nombre d'actions :
-        # deux chiffres frais, plutôt qu'une capitalisation publiée qui peut
-        # dater de plusieurs semaines.
-        shares = accounting.shares_outstanding
-        if math.isfinite(shares) and shares > 0 and math.isfinite(history.last_price):
-            market_cap = shares * history.last_price
-        else:
+        sources["facteurs"] = factors_provider.factor_label(guess.region)
+        if guess.evidence == "devise" and not guess.confident:
             warnings.append(
-                "Nombre d'actions en circulation indisponible : la "
-                "capitalisation boursière n'a pas pu être reconstituée."
+                f"Région déduite de la seule devise de publication "
+                f"({accounting_currency}) : {guess.label}. Si le siège est "
+                "ailleurs, le jeu de facteurs retenu n'est pas le bon."
             )
 
-        # Volatilité des capitaux propres pour le modèle de Merton, estimée
-        # sur les 60 derniers mois comme dans l'écran de production.
-        recent_returns = history.returns.tail(cfg.lookback_months)
-        equity_vol = (
-            float(recent_returns.std() * np.sqrt(12))
-            if len(recent_returns) >= 12 else 0.30
-        )
-
-        # Le bêta de marché vient de la régression Fama-French : c'est le
-        # même titre, la même fenêtre, donc un bêta cohérent avec l'alpha —
-        # plutôt qu'un bêta publié par un fournisseur tiers sur un autre
-        # horizon.
-        levered_beta = (
-            alpha_result.betas.get("Mkt-RF", float("nan"))
-            if alpha_result is not None else float("nan")
-        )
-
-        if math.isfinite(market_cap) and market_cap > 0:
-            mm_result = mm_valuation(
-                accounting.to_dict(), market_cap, equity_vol,
-                accounting.shares_outstanding, levered_beta, cfg,
+        # Les facteurs internationaux de Kenneth French sont libellés en
+        # dollars. Un titre coté en euros ou en yens doit l'être aussi, sans
+        # quoi son alpha absorberait la variation de sa devise.
+        regression_prices = monthly_prices
+        if quote_currency != "USD":
+            converted = fx_provider.convert_series(
+                monthly_prices, quote_currency, "USD", cfg,
             )
-            if mm_result is None:
-                warnings.append(
-                    "Juste valeur Modigliani-Miller non calculable : le "
-                    "résultat d'exploitation sur 12 mois glissants est négatif "
-                    "ou nul, une valorisation par perpétuité n'aurait pas de "
-                    "sens."
-                )
+            if converted is not None and len(converted) >= cfg.hard_min_obs:
+                regression_prices = converted
+                sources["change"] = "Banque centrale européenne"
             else:
-                warnings.extend(mm_result.notes)
-                alert = leverage_alert(
-                    mm_result, accounting.ebit, accounting.total_debt, cfg,
+                warnings.append(
+                    f"Conversion {quote_currency} → USD impossible : la "
+                    "régression compare des rendements en "
+                    f"{quote_currency} à des facteurs en dollars, et l'alpha "
+                    "absorbe la variation de change."
                 )
-                if alert:
-                    warnings.append(alert)
 
-    # ── 4. Piliers, score composite, verdict ───────────────────────────── #
+        stock_returns = regression_prices.pct_change(fill_method=None).dropna()
+        alpha_result = compute_alpha(stock_returns, factor_frame, cfg)
+        momentum_result = compute_momentum(
+            regression_prices, factors_provider.market_returns(factor_frame), cfg,
+        )
+
+    # ── 4. Juste valeur Modigliani-Miller ──────────────────────────────── #
+    mm_result: Optional[MMResult] = None
+    market_cap = float("nan")
+    fair_value = float("nan")
+
+    if accounting is not None:
+        market_cap, fair_value, _mm_cap, mm_result, mm_notes = _valuation_pillar(
+            accounting, quote, history, price, quote_currency,
+            monthly_prices, alpha_result, cfg,
+        )
+        warnings.extend(mm_notes)
+
+    # ── 5. Piliers, score composite, verdict ───────────────────────────── #
     pillars = [
         _build_alpha_pillar(alpha_result, cfg),
         _build_mm_pillar(mm_result, cfg),
@@ -637,8 +811,6 @@ def analyze(ticker: str, cfg: ValuationConfig = DEFAULT_CONFIG) -> Analysis:
     composite = _combine(pillars, crash_regime, cfg)
     verdict, label = _verdict_from_score(composite, cfg)
 
-    fair_value = mm_result.fair_value_per_share if mm_result else float("nan")
-    price = history.last_price
     upside = (
         (fair_value / price - 1.0) * 100.0
         if math.isfinite(fair_value) and math.isfinite(price) and price > 0
@@ -654,7 +826,9 @@ def analyze(ticker: str, cfg: ValuationConfig = DEFAULT_CONFIG) -> Analysis:
         ticker=symbol,
         company_name=company_name,
         sector=sector,
-        currency=history.currency,
+        currency=quote_currency,
+        region=guess.region,
+        region_label=guess.label,
         verdict=verdict,
         verdict_label=label,
         composite_score=composite,

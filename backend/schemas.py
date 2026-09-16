@@ -55,6 +55,8 @@ def analysis_to_dict(analysis: Analysis) -> Dict:
         "company_name": analysis.company_name,
         "sector": analysis.sector,
         "currency": analysis.currency,
+        "region": analysis.region,
+        "region_label": analysis.region_label,
         "verdict": analysis.verdict,
         "verdict_label": analysis.verdict_label,
         "composite_score": safe_float(analysis.composite_score),

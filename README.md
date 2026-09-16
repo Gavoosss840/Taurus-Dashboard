@@ -43,7 +43,7 @@ gratuites (SEC EDGAR, bibliothèque de Kenneth French, Yahoo Finance). Une clé
 Financial Modeling Prep dans `.env` améliore la couverture et la fiabilité.
 
 ```bash
-python -m pytest              # 134 tests, sans accès réseau
+python -m pytest              # 191 tests, sans accès réseau
 ```
 
 ---
@@ -136,6 +136,50 @@ limites de la correction figurent dans [`docs/METHODOLOGIE.md`](docs/METHODOLOGI
 
 ---
 
+## Couverture internationale
+
+Le dashboard accepte une cotation américaine comme une place locale :
+
+```
+AAPL        ASML        TM              cotations américaines, ADR compris
+MC.PA       SAP.DE      SHEL.L          Paris, Francfort, Londres
+7203.T      0700.HK     005930.KS       Tokyo, Hong Kong, Séoul
+RELIANCE.NS BHP.AX      PETR4.SA        Bombay, Sydney, São Paulo
+```
+
+Trois traitements en découlent.
+
+**Le jeu de facteurs suit la région du siège.** Kenneth French publie des
+facteurs distincts pour l'Amérique du Nord, l'Europe, le Japon,
+l'Asie-Pacifique hors Japon et les marchés émergents. Régresser un titre
+japonais sur les facteurs américains attribuerait à son alpha tout ce qui
+n'est qu'un écart entre les deux marchés. La région se déduit du suffixe de
+place, à défaut du pays déclaré à la SEC, à défaut de la devise de
+publication — le dashboard indique laquelle de ces pistes a tranché.
+
+**Les rendements sont convertis en dollars avant la régression.** Les facteurs
+internationaux de Kenneth French sont libellés en dollars ; un titre coté en
+euros ou en yens doit l'être aussi, faute de quoi son alpha absorberait la
+variation de sa devise. Les taux viennent de la Banque centrale européenne.
+
+**L'écran Modigliani-Miller raisonne dans la devise des comptes.** ASML publie
+en euros et cote en dollars : rapprocher directement ses fondamentaux de sa
+capitalisation mesurerait la parité EUR/USD, pas une décote. La capitalisation
+reste affichée dans la devise de cotation, celle du cours.
+
+Deux limites à connaître :
+
+- **Les ADR.** Un certificat Toyota représente dix actions ordinaires, alors
+  que la SEC publie le nombre d'ordinaires. La capitalisation est donc
+  demandée à un fournisseur qui connaît le titre coté ; à défaut seulement,
+  elle est reconstituée — et le dashboard signale alors qu'elle peut être
+  surestimée.
+- **Les devises hors BCE.** Le dollar de Taïwan n'est pas publié par la
+  Banque centrale européenne : pour TSMC, le pilier Modigliani-Miller est
+  neutralisé plutôt que calculé sur une parité supposée.
+
+---
+
 ## Sources de données
 
 Chaque famille de données passe par une chaîne de repli : aucune source n'est
@@ -144,13 +188,23 @@ indispensable, et l'interface indique toujours celle qui a servi.
 | Donnée | Ordre de priorité |
 |---|---|
 | Cours mensuels | Financial Modeling Prep (si clé) → Yahoo Finance → marketdata.app → Nasdaq Data |
-| Facteurs FF5 | Kenneth R. French Data Library |
-| Fondamentaux | SEC EDGAR (XBRL) → Financial Modeling Prep (si clé) |
-| Secteur | code SIC de SEC EDGAR, traduit en nomenclature GICS |
+| Facteurs FF5 | Kenneth R. French Data Library, jeu régional |
+| Fondamentaux | SEC EDGAR (XBRL, US-GAAP et IFRS) → Financial Modeling Prep (si clé) |
+| Capitalisation et secteur | Financial Modeling Prep (si clé) → Yahoo Finance → Nasdaq Data |
+| Taux de change | Banque centrale européenne, via api.frankfurter.app |
+
+SEC EDGAR couvre les déposants américains **et** les émetteurs privés
+étrangers déposant un formulaire 20-F — ASML, SAP, TSMC, Toyota, Shell,
+Unilever, Novo Nordisk… — dont les comptes sont lus dans leur taxonomie
+(US-GAAP ou IFRS) et leur devise. Hors de ce périmètre, une clé Financial
+Modeling Prep est nécessaire ; sans elle, le pilier Modigliani-Miller est
+neutralisé et son poids reporté sur les deux autres.
 
 Nasdaq Data ne réintègre pas les dividendes : lorsque cette source est
 utilisée, l'alpha et le momentum sont sous-estimés à hauteur du rendement du
-dividende, et le dashboard le signale.
+dividende, et le dashboard le signale. Elle ne couvre par ailleurs que les
+cotations américaines — une place locale passe nécessairement par Yahoo ou
+Financial Modeling Prep.
 
 Les réponses sont mises en cache sur disque (`.cache/`, 12 h par défaut).
 
@@ -191,9 +245,16 @@ taurus_core/              moteur de valorisation
 ├── valuation.py          orchestration, score composite, verdict
 ├── cache.py              cache disque avec durée de vie
 └── providers/            accès aux données, avec repli entre fournisseurs
+    ├── prices.py         cours mensuels ajustés
+    ├── fundamentals.py   comptes SEC EDGAR (US-GAAP et IFRS, toutes devises)
+    ├── quotes.py         capitalisation et secteur du titre coté
+    ├── factors.py        facteurs Fama-French régionaux
+    ├── fx.py             taux de change de la BCE
+    ├── regions.py        région de rattachement d'un titre
+    └── sectors.py        code SIC → secteur GICS
 backend/                  API FastAPI et sérialisation JSON
 frontend/                 interface web (HTML/CSS/JS, sans compilation)
-tests/                    134 tests, sans accès réseau
+tests/                    191 tests, sans accès réseau
 docs/METHODOLOGIE.md      justification des choix et limites du modèle
 ```
 
@@ -208,8 +269,9 @@ docs/METHODOLOGIE.md      justification des choix et limites du modèle
   sociétés en forte expansion. Un verdict « sur-évaluée » sur une valeur de
   croissance dit que le marché anticipe mieux que la perpétuité, pas
   nécessairement qu'il a tort.
-- La couverture est **centrée sur les États-Unis** : SEC EDGAR ne référence que
-  les sociétés déposant auprès de la SEC.
+- **Hors des déposants SEC**, les fondamentaux exigent une clé Financial
+  Modeling Prep : SEC EDGAR ne référence que les sociétés déposant auprès
+  d'elle, émetteurs étrangers en 20-F compris.
 - Les facteurs de Kenneth French sont publiés avec un à deux mois de décalage.
 
 Cet outil est un support d'analyse quantitative. Ce n'est pas un conseil en

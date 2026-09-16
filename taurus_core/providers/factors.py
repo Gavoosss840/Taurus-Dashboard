@@ -26,9 +26,35 @@ from . import http
 logger = logging.getLogger(__name__)
 
 FRENCH_BASE = "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp"
-FF5_URL = f"{FRENCH_BASE}/F-F_Research_Data_5_Factors_2x3_CSV.zip"
 
 FF5_COLUMNS = ["Mkt-RF", "SMB", "HML", "RMW", "CMA", "RF"]
+
+# Un jeu de facteurs par région. Régresser un titre japonais sur les facteurs
+# américains attribuerait à son alpha tout ce qui n'est qu'un écart entre les
+# deux marchés.
+#
+# Les fichiers internationaux de Kenneth French sont libellés EN DOLLARS : les
+# rendements du titre doivent l'être aussi, d'où la conversion effectuée en
+# amont par `providers.fx`.
+FACTOR_FILES = {
+    "north_america": "North_America_5_Factors_CSV.zip",
+    "europe":        "Europe_5_Factors_CSV.zip",
+    "japan":         "Japan_5_Factors_CSV.zip",
+    "asia_pacific":  "Asia_Pacific_ex_Japan_5_Factors_CSV.zip",
+    "emerging":      "Emerging_5_Factors_CSV.zip",
+}
+
+# Le jeu américain historique, plus profond que « North America » (1963 contre
+# 1990) : on le garde pour les titres américains, où il fait référence.
+US_FACTOR_FILE = "F-F_Research_Data_5_Factors_2x3_CSV.zip"
+
+FACTOR_LABELS = {
+    "north_america": "Kenneth R. French — États-Unis (5 facteurs)",
+    "europe":        "Kenneth R. French — Europe (5 facteurs)",
+    "japan":         "Kenneth R. French — Japon (5 facteurs)",
+    "asia_pacific":  "Kenneth R. French — Asie-Pacifique hors Japon (5 facteurs)",
+    "emerging":      "Kenneth R. French — marchés émergents (5 facteurs)",
+}
 
 
 def _parse_french_csv(payload: bytes) -> Optional[pd.DataFrame]:
@@ -82,27 +108,48 @@ def _parse_french_csv(payload: bytes) -> Optional[pd.DataFrame]:
     return frame.dropna(how="all").sort_index()
 
 
-def get_ff5_factors(cfg: ValuationConfig = DEFAULT_CONFIG) -> Optional[pd.DataFrame]:
-    """Série mensuelle complète des 5 facteurs Fama-French (+ taux sans risque).
+def get_ff5_factors(
+    region: str = "north_america",
+    cfg: ValuationConfig = DEFAULT_CONFIG,
+) -> Optional[pd.DataFrame]:
+    """Série mensuelle des 5 facteurs Fama-French pour une région.
 
     Le fichier est mis à jour une fois par mois : un cache long est donc sans
-    danger et évite de retélécharger 1,2 Mo à chaque analyse.
+    danger et évite de retélécharger l'archive à chaque analyse.
+
+    Pour l'Amérique du Nord, le jeu américain historique est essayé d'abord :
+    il remonte à 1963 contre 1990 pour le fichier « North America », ce qui
+    donne une fenêtre de régression toujours pleine.
     """
+    region = region if region in FACTOR_FILES else "north_america"
+
+    candidates = (
+        [US_FACTOR_FILE, FACTOR_FILES[region]] if region == "north_america"
+        else [FACTOR_FILES[region]]
+    )
 
     def _fetch() -> Optional[pd.DataFrame]:
-        payload = http.get_bytes(FF5_URL)
-        if payload is None:
-            return None
-        frame = _parse_french_csv(payload)
-        if frame is None or frame.empty:
-            return None
-        logger.info(
-            "Facteurs FF5 chargés : %d mois (%s → %s).",
-            len(frame), frame.index[0].date(), frame.index[-1].date(),
-        )
-        return frame
+        for filename in candidates:
+            payload = http.get_bytes(f"{FRENCH_BASE}/{filename}")
+            if payload is None:
+                continue
+            frame = _parse_french_csv(payload)
+            if frame is None or frame.empty:
+                continue
+            logger.info(
+                "Facteurs %s chargés : %d mois (%s → %s).",
+                region, len(frame), frame.index[0].date(), frame.index[-1].date(),
+            )
+            return frame
+        logger.warning("Aucun jeu de facteurs disponible pour la région %s.", region)
+        return None
 
-    return cache.memoize("ff5_factors_v1", _fetch, cfg)
+    return cache.memoize(f"ff5_factors_v2_{region}", _fetch, cfg)
+
+
+def factor_label(region: str) -> str:
+    """Libellé de la source de facteurs, affiché dans le dashboard."""
+    return FACTOR_LABELS.get(region, FACTOR_LABELS["north_america"])
 
 
 def market_returns(factors: pd.DataFrame) -> pd.Series:

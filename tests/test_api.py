@@ -9,7 +9,7 @@ from backend.app import app
 from backend.schemas import analysis_to_dict, safe_float
 from taurus_core import valuation
 
-from test_valuation import build_factors, build_fundamentals, build_prices
+from test_valuation import build_factors, build_fundamentals, build_prices, build_quote
 
 client = TestClient(app, raise_server_exceptions=False)
 
@@ -18,16 +18,22 @@ client = TestClient(app, raise_server_exceptions=False)
 def stub_engine(monkeypatch):
     """Fournisseurs déterministes, pour que l'API ne touche pas le réseau."""
     factors = build_factors()
+    prices = build_prices(factors)
     monkeypatch.setattr(
         valuation.prices_provider, "get_monthly_prices",
-        lambda ticker, cfg=None: build_prices(factors),
+        lambda ticker, cfg=None: prices,
     )
     monkeypatch.setattr(
-        valuation.factors_provider, "get_ff5_factors", lambda cfg=None: factors,
+        valuation.factors_provider, "get_ff5_factors",
+        lambda region="north_america", cfg=None: factors,
     )
     monkeypatch.setattr(
         valuation.fundamentals_provider, "get_fundamentals",
         lambda ticker, cfg=None: build_fundamentals(),
+    )
+    monkeypatch.setattr(
+        valuation.quotes_provider, "get_quote",
+        lambda ticker, cfg=None: build_quote(prices.last_price * 1.0e9),
     )
 
 
@@ -67,7 +73,8 @@ def test_analyze_returns_the_full_payload(stub_engine):
     assert payload["verdict"] in ("SOUS-ÉVALUÉE", "SUR-ÉVALUÉE", "AU JUSTE PRIX")
     assert len(payload["pillars"]) == 3
     for field in ("composite_score", "confidence", "price", "summary",
-                  "data_sources", "computed_at"):
+                  "data_sources", "computed_at", "region", "region_label",
+                  "currency"):
         assert field in payload
 
 

@@ -46,6 +46,14 @@ class Fundamentals:
     company_name: str = ""
     sector: str = "Unknown"
     source: str = ""
+    # Devise de publication des comptes. ASML dépose auprès de la SEC mais
+    # publie en euros tout en cotant en dollars à New York : comparer ses
+    # fondamentaux à sa capitalisation sans conversion mesurerait la parité
+    # EUR/USD, pas une décote.
+    currency: str = "USD"
+    # Pays du déposant, quand SEC EDGAR le renseigne : sert à choisir le jeu
+    # de facteurs Fama-French régional.
+    country: str = ""
 
     # Bilan (valeurs instantanées, dernier arrêté connu)
     total_debt: float = NAN
@@ -137,15 +145,47 @@ def ticker_to_cik(ticker: str, cfg: ValuationConfig = DEFAULT_CONFIG) -> Optiona
 #  SEC EDGAR : extraction XBRL                                                 #
 # --------------------------------------------------------------------------- #
 
-def _usd_facts(us_gaap: dict, concept: str) -> List[dict]:
-    """Faits en USD pour un concept, dédupliqués sur la période déclarée.
+# Unités XBRL qui ne sont pas des montants monétaires.
+_NON_MONETARY_UNITS = {"shares", "pure", "Year", "Store", "Rate", "Y", "D"}
+
+
+def reporting_currency(us_gaap: dict) -> str:
+    """Devise dans laquelle l'entreprise publie ses comptes.
+
+    SEC EDGAR indexe chaque fait par son unité : « USD » pour un déposant
+    américain, « EUR » pour ASML, « JPY » pour Sony. Lire USD en dur — ce que
+    faisait ce module — renvoyait des comptes vides pour tout émetteur privé
+    étranger, alors même que ses chiffres étaient là.
+
+    On retient l'unité monétaire la plus employée dans la taxonomie.
+    """
+    from collections import Counter
+
+    tally: Counter = Counter()
+    for concept in us_gaap.values():
+        for unit, entries in ((concept.get("units") or {})).items():
+            if unit in _NON_MONETARY_UNITS or "/" in unit:
+                continue
+            if len(unit) == 3 and unit.isalpha():
+                tally[unit.upper()] += len(entries or [])
+
+    if not tally:
+        return "USD"
+    return tally.most_common(1)[0][0]
+
+
+def _money_facts(us_gaap: dict, concept: str, currency: str = "USD") -> List[dict]:
+    """Faits monétaires d'un concept, dédupliqués sur la période déclarée.
 
     Une même période est souvent republiée (10-K reprenant un trimestre,
     amendement 10-K/A…).  On conserve le dépôt le plus récent, qui porte les
     chiffres retraités.
     """
     units = (us_gaap.get(concept) or {}).get("units") or {}
-    raw = units.get("USD") or []
+    raw = units.get(currency) or []
+    if not raw and currency != "USD":
+        # Un émetteur étranger publie parfois quelques agrégats en dollars.
+        raw = units.get("USD") or []
 
     best: Dict[tuple, dict] = {}
     for fact in raw:
@@ -204,14 +244,17 @@ def _pick_freshest(candidates: List[tuple[int, dict]]) -> Optional[dict]:
     return min(fresh, key=lambda item: item[0])[1]
 
 
-def _latest_instant(us_gaap: dict, *concepts: str) -> tuple[float, str]:
+def _latest_instant(
+    us_gaap: dict, *concepts: str, currency: str = "USD",
+) -> tuple[float, str]:
     """Dernière valeur de bilan (fait instantané : pas de date de début).
 
     Renvoie (valeur, date_de_cloture).
     """
     candidates: List[tuple[int, dict]] = []
     for rank, concept in enumerate(concepts):
-        instants = [f for f in _usd_facts(us_gaap, concept) if not f.get("start")]
+        instants = [f for f in _money_facts(us_gaap, concept, currency)
+                    if not f.get("start")]
         if instants:
             candidates.append((rank, instants[0]))
 
@@ -265,7 +308,7 @@ def _ttm_from_facts(facts: List[dict]) -> Optional[tuple[float, str]]:
     return None
 
 
-def _ttm(us_gaap: dict, *concepts: str) -> tuple[float, str]:
+def _ttm(us_gaap: dict, *concepts: str, currency: str = "USD") -> tuple[float, str]:
     """Flux sur 12 mois glissants, en privilégiant le concept le plus à jour.
 
     Renvoie (valeur, date_de_fin_de_periode).
@@ -274,7 +317,8 @@ def _ttm(us_gaap: dict, *concepts: str) -> tuple[float, str]:
     computed: Dict[int, tuple[float, str]] = {}
 
     for rank, concept in enumerate(concepts):
-        facts = [f for f in _usd_facts(us_gaap, concept) if f.get("start")]
+        facts = [f for f in _money_facts(us_gaap, concept, currency)
+                 if f.get("start")]
         if not facts:
             continue
         result = _ttm_from_facts(facts)
@@ -317,6 +361,140 @@ def _shares_outstanding(facts: dict) -> float:
     return NAN
 
 
+# --------------------------------------------------------------------------- #
+#  Concepts comptables, par taxonomie                                          #
+# --------------------------------------------------------------------------- #
+# Les déposants américains publient en US-GAAP ; les émetteurs privés étrangers
+# (formulaire 20-F) publient le plus souvent en IFRS, avec des noms de concepts
+# entièrement différents. Ne connaître que l'US-GAAP privait le dashboard de
+# SAP, TSMC, Shell, Unilever et de la plupart des grandes capitalisations
+# européennes et asiatiques cotées à New York.
+#
+# Chaque entrée est une liste de synonymes par ordre de préférence ; la
+# sélection retient malgré tout le concept le plus RÉCENT (voir _pick_freshest).
+
+_USGAAP_CONCEPTS: Dict[str, List[str]] = {
+    "debt_aggregate": [
+        "LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities",
+        "DebtLongtermAndShorttermCombinedAmount",
+        "DebtAndCapitalLeaseObligations",
+    ],
+    "debt_noncurrent": [
+        "LongTermDebtNoncurrent",
+        "LongTermDebtAndCapitalLeaseObligationsNoncurrent",
+        "LongTermDebtAndCapitalLeaseObligations",
+        "LongTermDebt",
+    ],
+    "debt_current": [
+        "LongTermDebtCurrent",
+        "LongTermDebtAndCapitalLeaseObligationsCurrent",
+        "DebtCurrent",
+        "ShortTermBorrowings",
+        "OtherShortTermBorrowings",
+    ],
+    "equity": [
+        "StockholdersEquity",
+        "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+    ],
+    "assets": ["Assets"],
+    "cash": [
+        "CashAndCashEquivalentsAtCarryingValue",
+        "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+        "CashAndCashEquivalentsAtCarryingValueIncludingDiscontinuedOperations",
+    ],
+    "ebit": [
+        "OperatingIncomeLoss",
+        "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+    ],
+    "interest": [
+        "InterestExpense",
+        "InterestExpenseDebt",
+        "InterestExpenseNonoperating",
+        "InterestAndDebtExpense",
+        "InterestExpenseBorrowings",
+        "InterestIncomeExpenseNet",
+    ],
+    "revenue": [
+        "RevenueFromContractWithCustomerExcludingAssessedTax",
+        "Revenues",
+        "SalesRevenueNet",
+        "RevenueFromContractWithCustomerIncludingAssessedTax",
+    ],
+    "net_income": ["NetIncomeLoss", "ProfitLoss"],
+    "operating_cf": [
+        "NetCashProvidedByUsedInOperatingActivities",
+        "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
+    ],
+    "capex": [
+        "PaymentsToAcquirePropertyPlantAndEquipment",
+        "PaymentsToAcquireProductiveAssets",
+        "CapitalExpendituresIncurredButNotYetPaid",
+    ],
+    "tax_expense": ["IncomeTaxExpenseBenefit"],
+    "pretax": [
+        "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+        "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments",
+    ],
+}
+
+_IFRS_CONCEPTS: Dict[str, List[str]] = {
+    # `Borrowings` est l'agrégat propre quand il existe (Shell, Unilever) ;
+    # `FinancialLiabilities` prend le relais chez les déposants qui ne le
+    # publient pas (SAP), au prix d'un périmètre un peu plus large.
+    "debt_aggregate": ["Borrowings", "FinancialLiabilities"],
+    "debt_noncurrent": [
+        "LongtermBorrowings",
+        "NoncurrentPortionOfNoncurrentBorrowings",
+        "NoncurrentFinancialLiabilities",
+    ],
+    "debt_current": [
+        "ShorttermBorrowings",
+        "CurrentPortionOfLongtermBorrowings",
+        "CurrentFinancialLiabilities",
+    ],
+    "equity": ["Equity", "EquityAttributableToOwnersOfParent"],
+    "assets": ["Assets"],
+    "cash": ["CashAndCashEquivalents"],
+    "ebit": ["ProfitLossFromOperatingActivities", "OperatingProfitLoss"],
+    "interest": [
+        "FinanceCosts",
+        "InterestExpense",
+        "InterestExpenseOnBorrowings",
+        "FinanceCostsPaidClassifiedAsOperatingActivities",
+    ],
+    "revenue": ["Revenue", "RevenueFromContractsWithCustomers"],
+    "net_income": ["ProfitLoss", "ProfitLossAttributableToOwnersOfParent"],
+    "operating_cf": ["CashFlowsFromUsedInOperatingActivities"],
+    "capex": [
+        "PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities",
+        "PurchaseOfPropertyPlantAndEquipmentIntangibleAssetsOtherThanGoodwillInvestmentPropertyAndOtherNoncurrentAssets",
+    ],
+    "tax_expense": ["IncomeTaxExpenseContinuingOperations"],
+    "pretax": ["ProfitLossBeforeTax"],
+}
+
+# Ordre d'essai : la taxonomie la plus fournie l'emporte (Toyota publie les
+# deux, l'US-GAAP étant chez lui la plus complète).
+_TAXONOMIES = (
+    ("us-gaap", _USGAAP_CONCEPTS),
+    ("ifrs-full", _IFRS_CONCEPTS),
+)
+
+
+def _select_taxonomy(facts: dict) -> tuple[str, Dict[str, List[str]], dict]:
+    """Retient la taxonomie la mieux renseignée pour ce déposant.
+
+    Renvoie (nom, carte des concepts, dictionnaire des faits).
+    """
+    available = facts.get("facts") or {}
+    best_name, best_map, best_facts, best_size = "", {}, {}, 0
+    for name, concept_map in _TAXONOMIES:
+        block = available.get(name) or {}
+        if len(block) > best_size:
+            best_name, best_map, best_facts, best_size = name, concept_map, block, len(block)
+    return best_name, best_map, best_facts
+
+
 def _from_edgar(ticker: str, cfg: ValuationConfig) -> Optional[Fundamentals]:
     cik = ticker_to_cik(ticker, cfg)
     if not cik:
@@ -327,43 +505,40 @@ def _from_edgar(ticker: str, cfg: ValuationConfig) -> Optional[Fundamentals]:
     facts = http.get_json(f"{EDGAR_BASE}/api/xbrl/companyfacts/CIK{cik}.json", headers=headers)
     if not isinstance(facts, dict):
         return None
-    us_gaap = (facts.get("facts") or {}).get("us-gaap") or {}
-    if not us_gaap:
+
+    taxonomy, concepts, book = _select_taxonomy(facts)
+    if not book:
         return None
 
     result = Fundamentals(ticker=ticker, source="SEC EDGAR")
     result.company_name = str(facts.get("entityName") or "").strip()
+    result.currency = reporting_currency(book)
+    if taxonomy == "ifrs-full":
+        result.source = "SEC EDGAR (IFRS)"
+
+    money = result.currency
+
+    def instant(key: str) -> tuple[float, str]:
+        return _latest_instant(book, *concepts.get(key, ()), currency=money)
+
+    def ttm(key: str) -> tuple[float, str]:
+        return _ttm(book, *concepts.get(key, ()), currency=money)
 
     # ── Métadonnées : nom lisible et secteur (via le code SIC) ──────────── #
     meta = http.get_json(f"{EDGAR_BASE}/submissions/CIK{cik}.json", headers=headers)
     if isinstance(meta, dict):
         result.company_name = str(meta.get("name") or result.company_name).strip()
         result.sector = sector_from_sic(meta.get("sic"))
+        addresses = meta.get("addresses") or {}
+        address = addresses.get("business") or addresses.get("mailing") or {}
+        result.country = str(address.get("stateOrCountryDescription") or "").strip()
 
     # ── Bilan : dette totale = part long terme + part courante ─────────── #
     # Certains déposants publient directement l'agrégat toutes échéances
     # confondues ; on le retient quand il est aussi frais que le détail.
-    aggregate, aggregate_end = _latest_instant(
-        us_gaap,
-        "LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities",
-        "DebtLongtermAndShorttermCombinedAmount",
-        "DebtAndCapitalLeaseObligations",
-    )
-    long_term, long_term_end = _latest_instant(
-        us_gaap,
-        "LongTermDebtNoncurrent",
-        "LongTermDebtAndCapitalLeaseObligationsNoncurrent",
-        "LongTermDebtAndCapitalLeaseObligations",
-        "LongTermDebt",
-    )
-    short_term, _ = _latest_instant(
-        us_gaap,
-        "LongTermDebtCurrent",
-        "LongTermDebtAndCapitalLeaseObligationsCurrent",
-        "DebtCurrent",
-        "ShortTermBorrowings",
-        "OtherShortTermBorrowings",
-    )
+    aggregate, aggregate_end = instant("debt_aggregate")
+    long_term, long_term_end = instant("debt_noncurrent")
+    short_term, _ = instant("debt_current")
 
     detail_total = NAN
     if not (math.isnan(long_term) and math.isnan(short_term)):
@@ -384,61 +559,25 @@ def _from_edgar(ticker: str, cfg: ValuationConfig) -> Optional[Fundamentals]:
 
     result.fiscal_period_end = period_end
 
-    result.total_equity, _ = _latest_instant(
-        us_gaap,
-        "StockholdersEquity",
-        "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
-    )
-    result.total_assets, _ = _latest_instant(us_gaap, "Assets")
-    result.cash, _ = _latest_instant(
-        us_gaap,
-        "CashAndCashEquivalentsAtCarryingValue",
-        "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
-        "CashAndCashEquivalentsAtCarryingValueIncludingDiscontinuedOperations",
-    )
+    result.total_equity, _ = instant("equity")
+    result.total_assets, _ = instant("assets")
+    result.cash, _ = instant("cash")
     result.shares_outstanding = _shares_outstanding(facts)
 
     # ── Flux 12 mois glissants ─────────────────────────────────────────── #
-    result.ebit, ebit_end = _ttm(
-        us_gaap,
-        "OperatingIncomeLoss",
-        "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
-    )
+    result.ebit, ebit_end = ttm("ebit")
     if ebit_end and not result.fiscal_period_end:
         result.fiscal_period_end = ebit_end
 
-    interest, _ = _ttm(
-        us_gaap,
-        "InterestExpense",
-        "InterestExpenseDebt",
-        "InterestExpenseNonoperating",
-        "InterestAndDebtExpense",
-        "InterestExpenseBorrowings",
-        "InterestIncomeExpenseNet",
-    )
+    interest, _ = ttm("interest")
     result.interest_expense = abs(interest) if not math.isnan(interest) else NAN
 
-    result.revenue, _ = _ttm(
-        us_gaap,
-        "RevenueFromContractWithCustomerExcludingAssessedTax",
-        "Revenues",
-        "SalesRevenueNet",
-        "RevenueFromContractWithCustomerIncludingAssessedTax",
-    )
-    result.net_income, _ = _ttm(us_gaap, "NetIncomeLoss", "ProfitLoss")
+    result.revenue, _ = ttm("revenue")
+    result.net_income, _ = ttm("net_income")
 
     # Flux de trésorerie disponible = flux opérationnel − investissements.
-    operating_cf, _ = _ttm(
-        us_gaap,
-        "NetCashProvidedByUsedInOperatingActivities",
-        "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
-    )
-    capex, _ = _ttm(
-        us_gaap,
-        "PaymentsToAcquirePropertyPlantAndEquipment",
-        "PaymentsToAcquireProductiveAssets",
-        "CapitalExpendituresIncurredButNotYetPaid",
-    )
+    operating_cf, _ = ttm("operating_cf")
+    capex, _ = ttm("capex")
     if not math.isnan(operating_cf):
         result.fcf = operating_cf - (0.0 if math.isnan(capex) else abs(capex))
     else:
@@ -450,12 +589,8 @@ def _from_edgar(ticker: str, cfg: ValuationConfig) -> Optional[Fundamentals]:
     # énergéticiens renouvelables) ou à 60 % (redressement exceptionnel)
     # reflète un accident comptable, pas la fiscalité structurelle de la dette
     # — on retombe alors sur le taux statutaire.
-    tax_expense, _ = _ttm(us_gaap, "IncomeTaxExpenseBenefit")
-    pretax, _ = _ttm(
-        us_gaap,
-        "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
-        "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments",
-    )
+    tax_expense, _ = ttm("tax_expense")
+    pretax, _ = ttm("pretax")
     result.tax_rate = cfg.default_tax_rate
     if not math.isnan(tax_expense) and not math.isnan(pretax) and pretax > 0:
         effective = tax_expense / pretax
@@ -526,6 +661,8 @@ def _from_fmp(ticker: str, cfg: ValuationConfig) -> Optional[Fundamentals]:
         info = profile[0]
         result.company_name = str(info.get("companyName") or "").strip()
         result.sector = str(info.get("sector") or "Unknown") or "Unknown"
+        result.currency = str(info.get("currency") or "USD").upper()
+        result.country = str(info.get("country") or "").strip()
 
     return result
 

@@ -1,0 +1,230 @@
+"""
+Tests de la couverture internationale.
+
+Trois pièges spécifiques aux titres étrangers, chacun capable de produire un
+verdict faux sans rien signaler :
+
+  • une société dépose auprès de la SEC mais publie dans une autre devise ;
+  • un certificat de dépôt (ADR) ne représente pas une action ordinaire ;
+  • un titre européen ou japonais ne se régresse pas sur les facteurs
+    américains.
+"""
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from taurus_core.config import ValuationConfig
+from taurus_core.providers import fx, quotes, regions
+from taurus_core.providers.factors import FACTOR_FILES, FACTOR_LABELS, factor_label
+from taurus_core.providers.fundamentals import reporting_currency
+from taurus_core.providers.sectors import sector_from_sic
+
+CFG = ValuationConfig()
+
+
+# --------------------------------------------------------------------------- #
+#  Devise de publication                                                       #
+# --------------------------------------------------------------------------- #
+
+def book(**units_by_concept) -> dict:
+    """Construit un bloc de faits XBRL à partir de {concept: {unité: n}}."""
+    return {
+        concept: {"units": {unit: [{"val": 1, "end": "2026-03-31"}] * count
+                            for unit, count in units.items()}}
+        for concept, units in units_by_concept.items()
+    }
+
+
+def test_reporting_currency_detects_a_foreign_filer():
+    """ASML dépose auprès de la SEC mais tient ses comptes en euros.
+
+    Lire USD en dur — ce que faisait le module — renvoyait des comptes vides
+    pour tout émetteur privé étranger, alors que ses chiffres étaient là.
+    """
+    facts = book(Assets={"EUR": 40}, Revenue={"EUR": 30}, Equity={"EUR": 25})
+    assert reporting_currency(facts) == "EUR"
+
+
+def test_reporting_currency_defaults_to_usd():
+    assert reporting_currency(book(Assets={"USD": 10})) == "USD"
+    assert reporting_currency({}) == "USD"
+
+
+def test_reporting_currency_ignores_non_monetary_units():
+    """« shares » et « pure » ne sont pas des devises."""
+    facts = book(
+        Shares={"shares": 90},
+        Ratio={"pure": 80},
+        Assets={"JPY": 10},
+    )
+    assert reporting_currency(facts) == "JPY"
+
+
+def test_reporting_currency_ignores_per_share_units():
+    facts = book(Eps={"EUR/shares": 50}, Assets={"EUR": 10})
+    assert reporting_currency(facts) == "EUR"
+
+
+# --------------------------------------------------------------------------- #
+#  Sous-unités de cotation                                                     #
+# --------------------------------------------------------------------------- #
+
+def test_london_prices_are_quoted_in_pence():
+    """Yahoo cote Londres en « GBp ». Ignorer ce point divise tout par cent."""
+    currency, factor = fx.normalise_currency("GBp")
+    assert currency == "GBP"
+    assert factor == 0.01
+
+
+def test_ordinary_currency_is_untouched():
+    assert fx.normalise_currency("EUR") == ("EUR", 1.0)
+    assert fx.normalise_currency("") == ("USD", 1.0)
+
+
+# --------------------------------------------------------------------------- #
+#  Conversion de change                                                        #
+# --------------------------------------------------------------------------- #
+
+def test_same_currency_needs_no_conversion():
+    series = pd.Series([1.0, 2.0])
+    assert fx.convert_series(series, "USD", "USD", CFG) is series
+    assert fx.monthly_rates("USD", "USD", cfg=CFG) is None
+    assert fx.latest_rate("EUR", "EUR", CFG) == 1.0
+
+
+def test_unsupported_pair_returns_none_rather_than_assuming_parity():
+    """La BCE ne publie pas le dollar de Taïwan.
+
+    Supposer 1,0 comparerait une capitalisation en dollars à des comptes en
+    TWD — un facteur trente d'écart, silencieusement.
+    """
+    assert fx.monthly_rates("TWD", "USD", cfg=CFG) is None
+    assert fx.latest_rate("TWD", "USD", CFG) is None
+
+
+def test_conversion_applies_the_rate(monkeypatch):
+    index = pd.date_range("2025-01-31", periods=4, freq="ME")
+    prices = pd.Series([100.0, 110.0, 120.0, 130.0], index=index)
+    rates = pd.Series([1.1, 1.2, 1.1, 1.05], index=index)
+    monkeypatch.setattr(fx, "monthly_rates", lambda *a, **k: rates)
+
+    converted = fx.convert_series(prices, "EUR", "USD", CFG)
+    assert converted is not None
+    assert list(converted) == pytest.approx([110.0, 132.0, 132.0, 136.5])
+
+
+def test_conversion_carries_rates_over_gaps(monkeypatch):
+    """Un trou ponctuel dans la série BCE ne doit pas amputer l'historique."""
+    index = pd.date_range("2025-01-31", periods=4, freq="ME")
+    prices = pd.Series([100.0] * 4, index=index)
+    rates = pd.Series([1.1, np.nan, np.nan, 1.2], index=index)
+    monkeypatch.setattr(fx, "monthly_rates", lambda *a, **k: rates)
+
+    converted = fx.convert_series(prices, "EUR", "USD", CFG)
+    assert converted is not None
+    assert len(converted) == 4
+
+
+# --------------------------------------------------------------------------- #
+#  Région et facteurs                                                          #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("ticker,expected", [
+    ("MC.PA", regions.EUROPE),
+    ("ASML.AS", regions.EUROPE),
+    ("SAP.DE", regions.EUROPE),
+    ("SHEL.L", regions.EUROPE),
+    ("7203.T", regions.JAPAN),
+    ("0700.HK", regions.ASIA_PACIFIC),
+    ("BHP.AX", regions.ASIA_PACIFIC),
+    ("005930.KS", regions.ASIA_PACIFIC),
+    ("RELIANCE.NS", regions.EMERGING),
+    ("PETR4.SA", regions.EMERGING),
+    ("SHOP.TO", regions.NORTH_AMERICA),
+])
+def test_suffix_determines_the_region(ticker, expected):
+    guess = regions.detect_region(ticker)
+    assert guess.region == expected
+    assert guess.evidence == "suffixe"
+    assert guess.confident
+
+
+def test_filing_country_is_used_without_a_suffix():
+    guess = regions.detect_region("ASML", country="Netherlands", currency="EUR")
+    assert guess.region == regions.EUROPE
+    assert guess.evidence == "pays"
+
+
+def test_currency_is_the_last_resort():
+    """TSMC n'a pas de pays renseigné chez EDGAR ; sa devise le trahit."""
+    guess = regions.detect_region("TSM", country="", currency="TWD")
+    assert guess.region == regions.ASIA_PACIFIC
+    assert guess.evidence == "devise"
+
+
+def test_a_us_listed_dollar_filer_is_a_confident_north_american():
+    guess = regions.detect_region("AAPL", country="", currency="USD")
+    assert guess.region == regions.NORTH_AMERICA
+    assert guess.confident
+
+
+def test_a_foreign_currency_guess_is_flagged_uncertain():
+    """Une région devinée sur la seule devise mérite d'être signalée."""
+    guess = regions.detect_region("SOMEADR", country="", currency="EUR")
+    assert guess.region == regions.EUROPE
+    assert not guess.confident
+
+
+def test_unknown_signals_fall_back_to_north_america():
+    guess = regions.detect_region("XYZ")
+    assert guess.region == regions.NORTH_AMERICA
+    assert guess.evidence == "défaut"
+
+
+def test_every_region_has_a_factor_file_and_a_label():
+    for region in FACTOR_FILES:
+        assert region in FACTOR_LABELS
+        assert factor_label(region)
+    assert set(FACTOR_FILES) == set(regions.REGION_LABELS)
+
+
+def test_unknown_region_label_falls_back():
+    assert factor_label("mars") == FACTOR_LABELS["north_america"]
+
+
+# --------------------------------------------------------------------------- #
+#  Capitalisation et secteur du titre coté                                     #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("raw,expected", [
+    ("250,650,592,821", 250650592821.0),
+    ("$1,625.42", 1625.42),
+    ("1000", 1000.0),
+    ("N/A", None),
+    ("", None),
+    (None, None),
+    ("0", None),
+    ("abc", None),
+])
+def test_amount_parsing(raw, expected):
+    assert quotes._parse_amount(raw) == expected
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("Technology", "Information Technology"),
+    ("Health Care", "Health Care"),
+    ("Consumer Non-Durables", "Consumer Staples"),
+    ("Public Utilities", "Utilities"),
+    ("Finance", "Financials"),
+    ("Basic Industries", "Materials"),
+    (None, "Unknown"),
+    ("something else", "Unknown"),
+])
+def test_sector_labels_are_mapped_to_gics(raw, expected):
+    assert quotes.normalise_sector(raw) == expected
+
+
+def test_semiconductor_equipment_is_technology():
+    """Le code SIC d'ASML (3559) le rangeait dans les machines industrielles."""
+    assert sector_from_sic(3559) == "Information Technology"

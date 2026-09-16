@@ -12,7 +12,7 @@ from taurus_core.providers.fundamentals import (
     _latest_instant,
     _pick_freshest,
     _ttm,
-    _usd_facts,
+    _money_facts,
 )
 from taurus_core.providers.sectors import sector_from_sic
 
@@ -150,7 +150,7 @@ def test_usd_facts_skips_entries_without_value():
         instant("2026-03-31", None),
         instant("2025-12-31", 90.0),
     ])
-    entries = _usd_facts(data, "Assets")
+    entries = _money_facts(data, "Assets")
     assert len(entries) == 1
     assert entries[0]["val"] == 90.0
 

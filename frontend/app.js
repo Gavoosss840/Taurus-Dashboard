@@ -100,6 +100,7 @@ function renderVerdict(data) {
   el("company-name").textContent = data.company_name || data.ticker;
   el("ticker-badge").textContent = data.ticker;
   el("sector").textContent = translateSector(data.sector);
+  el("region").textContent = data.region_label || "—";
   el("verdict-label").textContent = data.verdict_label;
   el("verdict-score").textContent =
     `score composite ${data.composite_score >= 0 ? "+" : ""}${formatNumber(data.composite_score, 2)}`;

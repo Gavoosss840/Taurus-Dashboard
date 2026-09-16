@@ -286,7 +286,80 @@ capitalisation publiée qui peut dater de plusieurs semaines.
 
 ---
 
-## 5. Limites connues
+## 5. Titres étrangers
+
+### Facteurs régionaux
+
+Kenneth French publie cinq jeux de facteurs : Amérique du Nord, Europe, Japon,
+Asie-Pacifique hors Japon, marchés émergents. Le moteur retient celui de la
+région du **siège**, pas de la place de cotation : un certificat de dépôt
+européen coté à New York reste exposé au risque européen, et les facteurs
+européens de Kenneth French, libellés en dollars comme lui, en sont bien la
+référence.
+
+La région se déduit de trois signaux, du plus fiable au moins fiable : le
+suffixe de place du ticker, le pays déclaré à la SEC, la devise de
+publication. Le dashboard affiche lequel a tranché — une région devinée sur la
+seule devise se trompe sur les groupes étrangers tenant leurs comptes en
+dollars, Shell en étant l'exemple.
+
+Le jeu américain historique remonte à 1963, contre 1990 pour les jeux
+internationaux : la fenêtre de régression de 60 mois reste pleine dans tous
+les cas.
+
+### Deux conversions, pour deux raisons distinctes
+
+Les facteurs internationaux sont libellés en dollars. Un titre coté en euros
+ou en yens est donc **converti en dollars avant la régression**, faute de quoi
+son alpha absorberait la variation de sa devise.
+
+L'écran Modigliani-Miller, lui, rapproche des fondamentaux d'une
+capitalisation : les deux doivent être dans une **même devise**, et c'est
+celle des comptes qui est retenue. ASML publie en euros et cote en dollars ;
+le rapprochement direct donnerait une divergence d'environ 16 %, qui n'est que
+la parité EUR/USD. La capitalisation reste affichée dans la devise de
+cotation, celle du cours qu'elle accompagne.
+
+Les taux viennent de la Banque centrale européenne (30 devises). Une paire non
+couverte — le dollar de Taïwan, par exemple — neutralise le pilier plutôt que
+de supposer la parité : comparer une capitalisation en dollars à des comptes
+en TWD représenterait un facteur trente, silencieusement.
+
+### Capitalisation d'un certificat de dépôt
+
+Le calcul naturel, actions en circulation × dernier cours, est faux pour un
+ADR. Un certificat Toyota représente dix actions ordinaires, or SEC EDGAR
+publie le nombre d'**ordinaires**. Le produit surestime la capitalisation d'un
+facteur dix : Toyota ressortirait à 2 500 milliards de dollars au lieu de 250,
+et l'écran le déclarerait massivement sur-évalué sans que rien ne le signale.
+
+Le rapport ADR / action ordinaire n'est publié nulle part de façon
+exploitable. La capitalisation est donc demandée à un fournisseur qui connaît
+le titre coté ; la reconstitution n'intervient qu'à défaut, accompagnée d'un
+avertissement. Le nombre d'actions servant à ramener la juste valeur à un prix
+est lui-même déduit de la capitalisation et du cours, tous deux relatifs au
+même titre.
+
+### Deux taxonomies comptables
+
+Les déposants américains publient en US-GAAP ; les émetteurs privés étrangers
+publient le plus souvent en IFRS, avec des noms de concepts entièrement
+différents — `ProfitLossFromOperatingActivities` au lieu de
+`OperatingIncomeLoss`, `Borrowings` au lieu de `LongTermDebtNoncurrent`. Ne
+connaître que l'US-GAAP privait le dashboard de SAP, TSMC, Shell, Unilever et
+de la plupart des grandes capitalisations européennes et asiatiques cotées à
+New York. Le moteur retient la taxonomie la mieux renseignée pour chaque
+déposant.
+
+### Sous-unités de cotation
+
+Londres cote en pence et non en livres, Tel-Aviv en agorot. Le suffixe de
+devise du fournisseur le signale (« GBp »), et l'ignorer diviserait la
+capitalisation par cent.
+
+---
+
+## 6. Limites connues
 
 - **Sociétés déficitaires.** Une perpétuité de flux négatifs n'a pas de sens :
   le pilier Modigliani-Miller est neutralisé lorsque l'EBIT sur douze mois est
@@ -297,9 +370,11 @@ capitalisation publiée qui peut dater de plusieurs semaines.
 - **Sociétés financières.** Le cadre Modigliani-Miller convient mal aux banques
   et aux assureurs, dont la dette est un intrant d'exploitation et non un choix
   de structure de capital.
-- **Couverture géographique.** SEC EDGAR ne référence que les déposants
-  américains. Hors de ce périmètre, seule une clé Financial Modeling Prep
-  fournit des fondamentaux.
+- **Couverture géographique.** SEC EDGAR référence les déposants américains et
+  les émetteurs privés étrangers déposant un 20-F. Une société sans lien avec
+  la SEC — LVMH, Nestlé, la cotation locale de Toyota — n'a de fondamentaux
+  que si une clé Financial Modeling Prep est fournie ; à défaut, le pilier
+  Modigliani-Miller est neutralisé et son poids reporté sur les deux autres.
 - **Dividendes.** Lorsque les cours proviennent de Nasdaq Data, ils excluent les
   dividendes : l'alpha et le momentum sont sous-estimés d'autant. Le dashboard
   le signale explicitement.

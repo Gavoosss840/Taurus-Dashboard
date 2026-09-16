@@ -30,19 +30,33 @@
   <!-- ── Recherche ────────────────────────────────────────────────────── -->
   <form class="search" id="search-form" autocomplete="off">
     <label class="sr-only" for="ticker">Ticker de la société</label>
-    <input type="text" id="ticker" name="ticker" placeholder="AAPL, MSFT, JNJ, XOM…"
-           maxlength="10" spellcheck="false" required>
+    <input type="text" id="ticker" name="ticker"
+           placeholder="AAPL, ASML, MC.PA, 7203.T, 0700.HK…"
+           maxlength="16" spellcheck="false" required>
     <button type="submit" id="submit-button">Analyser</button>
   </form>
 
   <p class="suggestions">
-    Exemples&nbsp;:
+    <span class="suggestions-label">États-Unis&nbsp;:</span>
     <button type="button" class="chip" data-ticker="AAPL">AAPL</button>
-    <button type="button" class="chip" data-ticker="MSFT">MSFT</button>
     <button type="button" class="chip" data-ticker="JNJ">JNJ</button>
     <button type="button" class="chip" data-ticker="XOM">XOM</button>
-    <button type="button" class="chip" data-ticker="KO">KO</button>
-    <button type="button" class="chip" data-ticker="NEE">NEE</button>
+    <span class="suggestions-label">Europe&nbsp;:</span>
+    <button type="button" class="chip" data-ticker="ASML">ASML</button>
+    <button type="button" class="chip" data-ticker="SAP">SAP</button>
+    <button type="button" class="chip" data-ticker="MC.PA">MC.PA</button>
+    <span class="suggestions-label">Asie&nbsp;:</span>
+    <button type="button" class="chip" data-ticker="TM">TM</button>
+    <button type="button" class="chip" data-ticker="7203.T">7203.T</button>
+    <button type="button" class="chip" data-ticker="0700.HK">0700.HK</button>
+  </p>
+
+  <p class="hint">
+    Une place locale s'écrit avec son suffixe&nbsp;: <code>.PA</code> Paris,
+    <code>.AS</code> Amsterdam, <code>.DE</code> Francfort, <code>.L</code>
+    Londres, <code>.T</code> Tokyo, <code>.HK</code> Hong&nbsp;Kong,
+    <code>.KS</code> Séoul, <code>.AX</code> Sydney. Le certificat américain
+    (ADR) se saisit sans suffixe&nbsp;: <code>ASML</code>, <code>TM</code>.
   </p>
 
   <!-- ── Volet méthode ────────────────────────────────────────────────── -->
@@ -61,7 +75,10 @@
         derniers mois de rendement sur les facteurs marché, taille, valeur,
         rentabilité et investissement. L'alpha est la performance que
         l'exposition au risque n'explique pas&nbsp;; son erreur-type est robuste
-        à l'hétéroscédasticité (HC1).
+        à l'hétéroscédasticité (HC1). Les facteurs retenus sont ceux de la
+        <strong>région du siège</strong>&nbsp;: régresser un titre japonais sur
+        les facteurs américains attribuerait à son alpha tout ce qui n'est
+        qu'un écart entre les deux marchés.
       </li>
       <li>
         <strong>Structure du capital (Modigliani-Miller)</strong> — juste valeur
@@ -77,6 +94,14 @@
       </li>
     </ol>
     <p class="method-weights" id="method-weights"></p>
+    <p>
+      Les facteurs internationaux de Kenneth French sont libellés en dollars.
+      Un titre coté dans une autre devise est donc converti avant la
+      régression, faute de quoi son alpha absorberait la variation de sa
+      devise. L'écran Modigliani-Miller, lui, raisonne dans la devise des
+      comptes&nbsp;: ASML publie en euros et cote en dollars, et les comparer
+      directement mesurerait la parité EUR/USD, pas une décote.
+    </p>
     <p class="disclaimer">
       Cet outil est un support d'analyse quantitative, pas un conseil en
       investissement. Les modèles de valorisation par perpétuité sont très
@@ -106,6 +131,8 @@
           <p class="identity">
             <span class="ticker-badge" id="ticker-badge">—</span>
             <span id="sector">—</span>
+            <span class="identity-sep" aria-hidden="true">·</span>
+            <span id="region">—</span>
           </p>
         </div>
         <div class="verdict-stamp" id="verdict-stamp">

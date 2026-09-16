@@ -12,6 +12,7 @@ from taurus_core import valuation
 from taurus_core.config import ValuationConfig
 from taurus_core.providers.fundamentals import Fundamentals
 from taurus_core.providers.prices import PriceHistory
+from taurus_core.providers.quotes import Quote
 from taurus_core.valuation import (
     InvalidTickerError,
     Pillar,
@@ -78,14 +79,32 @@ def build_fundamentals(**overrides) -> Fundamentals:
     return data
 
 
+def build_quote(market_cap: float = 1.0e11, **overrides) -> Quote:
+    data = {
+        "market_cap": market_cap,
+        "currency": "USD",
+        "sector": "Industrials",
+        "source": "doublure",
+    }
+    data.update(overrides)
+    return Quote(**data)
+
+
 @pytest.fixture
 def stub_providers(monkeypatch):
-    """Installe des fournisseurs déterministes et renvoie leur état mutable."""
+    """Installe des fournisseurs déterministes et renvoie leur état mutable.
+
+    Couvre toute la chaîne — cours, facteurs, fondamentaux, cotation, change —
+    pour qu'aucun test ne touche le réseau.
+    """
     factors = build_factors()
+    prices = build_prices(factors)
     state = {
-        "prices": build_prices(factors),
+        "prices": prices,
         "factors": factors,
         "fundamentals": build_fundamentals(),
+        # Capitalisation cohérente avec la doublure de cours et d'actions.
+        "quote": build_quote(prices.last_price * 1.0e9),
     }
     monkeypatch.setattr(
         valuation.prices_provider, "get_monthly_prices",
@@ -93,11 +112,15 @@ def stub_providers(monkeypatch):
     )
     monkeypatch.setattr(
         valuation.factors_provider, "get_ff5_factors",
-        lambda cfg=CFG: state["factors"],
+        lambda region="north_america", cfg=CFG: state["factors"],
     )
     monkeypatch.setattr(
         valuation.fundamentals_provider, "get_fundamentals",
         lambda ticker, cfg=CFG: state["fundamentals"],
+    )
+    monkeypatch.setattr(
+        valuation.quotes_provider, "get_quote",
+        lambda ticker, cfg=CFG: state["quote"],
     )
     return state
 
@@ -106,12 +129,15 @@ def stub_providers(monkeypatch):
 
 @pytest.mark.parametrize("raw,expected", [
     ("aapl", "AAPL"), ("  msft ", "MSFT"), ("brk-b", "BRK-B"), ("BRK.B", "BRK.B"),
+    # Places locales : le suffixe fait partie du ticker.
+    ("mc.pa", "MC.PA"), ("7203.t", "7203.T"), ("0700.hk", "0700.HK"),
+    ("reliance.ns", "RELIANCE.NS"),
 ])
 def test_normalise_ticker_accepts_valid_forms(raw, expected):
     assert normalise_ticker(raw) == expected
 
 
-@pytest.mark.parametrize("raw", ["", "   ", "@@@", "A B", "TROPLONGTICKER", "-ABC"])
+@pytest.mark.parametrize("raw", ["", "   ", "@@@", "A B", "A" * 17, "-ABC"])
 def test_normalise_ticker_rejects_invalid_forms(raw):
     with pytest.raises(InvalidTickerError):
         normalise_ticker(raw)
@@ -313,10 +339,124 @@ def test_summary_reports_divergent_pillars(stub_providers):
         assert "divergent" in result.summary.lower()
 
 
-def test_market_cap_is_rebuilt_from_price_and_shares(stub_providers):
+def test_market_cap_comes_from_the_quote_provider(stub_providers):
+    """La capitalisation vient du titre coté, pas de « actions × cours ».
+
+    Un ADR Toyota vaut dix actions ordinaires : reconstituer la capitalisation
+    à partir du nombre d'actions publié à la SEC la multiplierait par dix.
+    """
+    result = analyze("TEST", CFG)
+    assert result.market_cap == pytest.approx(stub_providers["quote"].market_cap)
+
+
+def test_market_cap_falls_back_to_shares_times_price(stub_providers):
+    """À défaut de fournisseur de cotation, la reconstitution reprend la main."""
+    stub_providers["quote"] = None
     result = analyze("TEST", CFG)
     expected = (
         stub_providers["fundamentals"].shares_outstanding
         * stub_providers["prices"].last_price
     )
     assert result.market_cap == pytest.approx(expected)
+
+
+def test_sector_from_the_quote_provider_wins(stub_providers):
+    """Le code SIC de la SEC classe ASML dans les machines industrielles."""
+    stub_providers["fundamentals"] = build_fundamentals(sector="Industrials")
+    stub_providers["quote"] = build_quote(1.0e11, sector="Information Technology")
+    assert analyze("TEST", CFG).sector == "Information Technology"
+
+
+def test_region_defaults_to_north_america(stub_providers):
+    result = analyze("TEST", CFG)
+    assert result.region == "north_america"
+
+
+def test_region_follows_the_ticker_suffix(stub_providers):
+    """Un suffixe de place détermine la région sans ambiguïté."""
+    assert analyze("MC.PA", CFG).region == "europe"
+    assert analyze("7203.T", CFG).region == "japan"
+    assert analyze("0700.HK", CFG).region == "asia_pacific"
+
+
+def test_region_follows_the_filing_country(stub_providers):
+    stub_providers["fundamentals"] = build_fundamentals(country="Japan")
+    assert analyze("TEST", CFG).region == "japan"
+
+
+# ── Devises ──────────────────────────────────────────────────────────────
+
+def test_market_cap_is_displayed_in_the_quote_currency(stub_providers):
+    """La capitalisation s'affiche à côté du cours : même devise que lui.
+
+    L'écran Modigliani-Miller raisonne dans la devise des COMPTES — ASML
+    publie en euros — mais montrer 544 milliards d'euros sous un symbole
+    dollar induirait en erreur.
+    """
+    from taurus_core.providers import fx as fx_module
+
+    stub_providers["fundamentals"] = build_fundamentals(currency="EUR")
+    stub_providers["quote"] = build_quote(1.0e11, currency="USD")
+    # 1 USD = 0,90 EUR, donc 1 EUR = 1,111 USD.
+    rates = {("USD", "EUR"): 0.90, ("EUR", "USD"): 1.0 / 0.90}
+    original = fx_module.latest_rate
+    fx_module.latest_rate = lambda a, b, cfg=None: rates.get((a.upper(), b.upper()))
+    try:
+        result = analyze("TEST", CFG)
+    finally:
+        fx_module.latest_rate = original
+
+    assert result.currency == "USD"
+    # Affichée telle quelle : la cotation est déjà en dollars.
+    assert result.market_cap == pytest.approx(1.0e11)
+
+
+def test_valuation_converts_accounts_to_the_market_cap_currency(stub_providers):
+    """Comptes et capitalisation doivent être rapprochés dans une seule devise.
+
+    Sans conversion, la divergence mesurerait la parité de change, pas une
+    décote.
+    """
+    from taurus_core.providers import fx as fx_module
+
+    baseline = analyze("TEST", CFG)
+
+    # Mêmes chiffres, mais déclarés en euros avec une capitalisation en
+    # dollars : le rapprochement doit appliquer le taux, donc changer la
+    # divergence.
+    stub_providers["fundamentals"] = build_fundamentals(currency="EUR")
+    rates = {("USD", "EUR"): 0.50, ("EUR", "USD"): 2.0}
+    original = fx_module.latest_rate
+    fx_module.latest_rate = lambda a, b, cfg=None: rates.get((a.upper(), b.upper()))
+    try:
+        converted = analyze("TEST", CFG)
+    finally:
+        fx_module.latest_rate = original
+
+    base_mm = next(p for p in baseline.pillars if p.key == "capital_structure")
+    conv_mm = next(p for p in converted.pillars if p.key == "capital_structure")
+    assert base_mm.available and conv_mm.available
+    assert conv_mm.details["divergence_pct"] != pytest.approx(
+        base_mm.details["divergence_pct"]
+    )
+
+
+def test_missing_exchange_rate_neutralises_the_mm_pillar(stub_providers):
+    """Le dollar de Taïwan n'est pas publié par la BCE.
+
+    Supposer la parité comparerait une capitalisation en dollars à des comptes
+    en TWD — un facteur trente, silencieusement.
+    """
+    from taurus_core.providers import fx as fx_module
+
+    stub_providers["fundamentals"] = build_fundamentals(currency="TWD")
+    original = fx_module.latest_rate
+    fx_module.latest_rate = lambda a, b, cfg=None: None
+    try:
+        result = analyze("TEST", CFG)
+    finally:
+        fx_module.latest_rate = original
+
+    mm = next(p for p in result.pillars if p.key == "capital_structure")
+    assert not mm.available
+    assert any("change" in w.lower() for w in result.warnings)

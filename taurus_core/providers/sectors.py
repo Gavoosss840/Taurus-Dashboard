@@ -43,7 +43,9 @@ _SIC_RANGES: List[Tuple[int, int, str]] = [
     (3200,  3299, "Materials"),               # verre, ciment
     (3300,  3399, "Materials"),               # métallurgie
     (3400,  3499, "Industrials"),             # produits métalliques
-    (3500,  3569, "Industrials"),             # machines industrielles
+    (3500,  3558, "Industrials"),             # machines industrielles
+    (3559,  3559, "Information Technology"),  # équipement de semi-conducteurs (ASML)
+    (3560,  3569, "Industrials"),             # machines générales
     (3570,  3579, "Information Technology"),  # matériel informatique
     (3580,  3599, "Industrials"),             # machines diverses
     (3600,  3639, "Industrials"),             # équipement électrique
